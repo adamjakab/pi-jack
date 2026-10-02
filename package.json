@@ -1,0 +1,8 @@
+{
+  "name": "subagent-runner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple subagent extension with structured JSON output.",
+  "type": "module",
+  "main": "index.ts"
+}
