@@ -9,6 +9,7 @@ Demonstrate the `subagent_runner` tool by surveying ${1:-the current folder} wit
 
 Call `subagent_runner` exactly **once**, with these parameters and nothing else:
 
+- debug_mode: true
 - run_mode: `parallel`
 - agent: `tester`
 - model: `stealth/space-bunny-alpha`

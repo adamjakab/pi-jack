@@ -31,6 +31,7 @@ import { Type, type TSchema } from "typebox";
 import {
   type AgentConfig,
   type AgentLoadError,
+  type AgentSource,
   discoverAgents,
 } from "./agents.ts";
 import {
@@ -127,6 +128,52 @@ interface SingleResult {
   usage: SubagentUsage;
 }
 
+/** How a subagent was set up once defaults and overrides were applied; shown by `debug_mode`. */
+export interface SubagentSetup {
+  agent: string;
+  /** Where the agent file came from; undefined for a bare pi agent (no default agent file). */
+  agentSource?: AgentSource;
+  overridesBuiltIn?: boolean;
+  /** Which prompts make up the system prompt: the agent's, the call's `system_prompt`, or both. */
+  prompt: Array<"agent" | "call">;
+  model?: string;
+  modelFrom?: "call" | "agent";
+  /** The `--tools` allowlist given to the child, result tools included; undefined means pi's default tools. */
+  tools?: string[];
+  toolsFrom?: "call" | "agent";
+  schema: TSchema;
+  schemaFrom: "call" | "agent" | "default";
+  /** The child's command line, as spawned. Its temp files are deleted once the child exits. */
+  command: string[];
+}
+
+const shellQuote = (arg: string) =>
+  /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
+
+/** Renders a setup as indented lines, for the progress display and the result. */
+export function describeSetup(setup: SubagentSetup): string {
+  const from = (source: string | undefined) =>
+    source ? ` (from the ${source})` : "";
+  const agent = !setup.agentSource
+    ? `${setup.agent} (no agent file, bare pi)`
+    : `${setup.agent} (${setup.agentSource === "built-in" ? "built-in" : setup.overridesBuiltIn ? "yours, overrides built-in" : "yours"})`;
+  const appended = setup.prompt.map((p) =>
+    p === "agent" ? "the agent's" : "the call's system_prompt",
+  );
+  const prompt =
+    appended.length > 0 ? `pi's, plus ${appended.join(" and ")}` : "pi's only";
+  return [
+    `agent: ${agent}`,
+    `system prompt: ${prompt}`,
+    `model: ${setup.model ? `${setup.model}${from(setup.modelFrom)}` : "pi's default"}`,
+    `tools: ${setup.tools ? `${setup.tools.join(", ")}${from(setup.toolsFrom)}` : `pi's default, plus ${RESULT_TOOL}, ${FAIL_TOOL}`}`,
+    `schema (${setup.schemaFrom === "default" ? "the default" : `from the ${setup.schemaFrom}`}): ${JSON.stringify(setup.schema)}`,
+    `command: ${setup.command.map(shellQuote).join(" ")}`,
+  ]
+    .map((line) => `    ${line}`)
+    .join("\n");
+}
+
 const taskItemSchema = Type.Object({
   task: Type.String({ description: "Task description for this subagent" }),
   agent: Type.Optional(
@@ -189,11 +236,13 @@ async function runSingleSubagent(
   schemaInput: unknown,
   signal: AbortSignal | undefined,
   onProgress?: (turns: number, activity: string) => void,
+  onSetup?: (setup: SubagentSetup) => void,
 ): Promise<SingleResult> {
   let agentPrompt = "";
   let extraPrompt: string | undefined;
   let tools: string[] | undefined;
   let model: string | undefined;
+  let toolsFrom: SubagentSetup["toolsFrom"];
   let resolvedAgentName = agentNameInput ?? "direct";
   // A schema passed on the call wins over the agent's default. Each resolves relative paths from where it was
   // written: the call from the working directory, the frontmatter from the agent file's folder.
@@ -242,12 +291,15 @@ async function runSingleSubagent(
     agentPrompt = agent.systemPrompt;
     tools = agent.tools;
     model = modelInput ?? agent.model;
+    toolsFrom = tools ? "agent" : undefined;
   } else {
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
     agentPrompt = agent?.systemPrompt ?? "";
     extraPrompt = systemPromptInput;
-    tools = normalizeTools(toolsInput) ?? agent?.tools;
+    const callTools = normalizeTools(toolsInput);
+    tools = callTools ?? agent?.tools;
     model = modelInput ?? agent?.model;
+    toolsFrom = callTools ? "call" : tools ? "agent" : undefined;
   }
   if (agent) resolvedAgentName = agent.name;
   if (schemaSource === undefined && agent?.schema !== undefined) {
@@ -296,6 +348,32 @@ async function runSingleSubagent(
       );
     if (tmp.promptPath) args.push("--append-system-prompt", tmp.promptPath);
     args.push(taskText);
+
+    if (onSetup) {
+      const invocation = getPiInvocation(args);
+      const toolsFlag = args.indexOf("--tools");
+      onSetup({
+        agent: resolvedAgentName,
+        agentSource: agent?.source,
+        overridesBuiltIn: agent?.overridesBuiltIn,
+        prompt: [
+          ...(agentPrompt.trim() ? ["agent" as const] : []),
+          ...(extraPrompt?.trim() ? ["call" as const] : []),
+        ],
+        model,
+        modelFrom: modelInput ? "call" : model ? "agent" : undefined,
+        tools: toolsFlag >= 0 ? args[toolsFlag + 1].split(",") : undefined,
+        toolsFrom,
+        schema,
+        schemaFrom:
+          schemaInput !== undefined
+            ? "call"
+            : schemaSource !== undefined
+              ? "agent"
+              : "default",
+        command: [invocation.command, ...invocation.args],
+      });
+    }
 
     const usage = zeroUsage();
     const run = await runChild(args, usage, signal, onProgress);
@@ -540,6 +618,13 @@ const subagentRunnerTool = defineTool({
         description: "Default tools. Inherited by batch items.",
       }),
     ),
+    debug_mode: Type.Optional(
+      Type.Boolean({
+        description:
+          "Show how each subagent is set up: agent, system prompt, model, tools, schema, and the pi command " +
+          "line. Only set this when the user asks for it.",
+      }),
+    ),
     model: Type.Optional(
       Type.String({
         description:
@@ -627,15 +712,23 @@ const subagentRunnerTool = defineTool({
 
     // Live per-task status, streamed to the TUI so long batches don't look frozen.
     const status = taskItems.map(() => "queued");
+    // With debug_mode, each task's setup, filled in as its child starts.
+    const setups: Array<SubagentSetup | undefined> = taskItems.map(
+      () => undefined,
+    );
+    const debug = params.debug_mode === true;
     const startedAt = Date.now();
     const reportProgress = () => {
       const done = status.filter(
         (s) => s.startsWith("✓") || s.startsWith("✗"),
       ).length;
       const secs = Math.round((Date.now() - startedAt) / 1000);
-      const lines = taskItems.map(
-        (item, i) => `[${i + 1}] ${taskLabel(item.task)} — ${status[i]}`,
-      );
+      const lines = taskItems.map((item, i) => {
+        const line = `[${i + 1}] ${taskLabel(item.task)} — ${status[i]}`;
+        return debug && setups[i]
+          ? `${line}\n${describeSetup(setups[i])}`
+          : line;
+      });
       onUpdate?.({
         content: [
           {
@@ -666,6 +759,12 @@ const subagentRunnerTool = defineTool({
             status[i] = `turn ${turns + 1}: ${activity}`;
             reportProgress();
           },
+          debug
+            ? (setup) => {
+                setups[i] = setup;
+                reportProgress();
+              }
+            : undefined,
         );
         status[i] = `${result.success ? "✓" : "✗"} ${result.usage.turns} turns`;
         reportProgress();
@@ -688,10 +787,25 @@ const subagentRunnerTool = defineTool({
         : header;
     });
 
+    if (debug) {
+      const described = taskItems.map(
+        (item, i) =>
+          `[${i + 1}] ${taskLabel(item.task)}\n${setups[i] ? describeSetup(setups[i]) : "    (no child was started)"}`,
+      );
+      blocks.unshift(
+        `Debug: how each subagent was set up\n${described.join("\n")}`,
+      );
+    }
+
     return {
       content: [{ type: "text", text: blocks.join("\n\n") }],
       structuredContent: { results } as any,
-      details: { results, runMode, count: results.length } as any,
+      details: {
+        results,
+        runMode,
+        count: results.length,
+        ...(debug ? { setups } : {}),
+      } as any,
       isError: anyFailed,
     };
   },

@@ -703,3 +703,93 @@ describe("batch", () => {
     );
   });
 });
+
+describe("debug_mode", () => {
+  it("adds nothing when it is off", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    const result = await run({ task: "t" });
+    expect(result.content[0].text).not.toContain("Debug:");
+    expect(result.details.setups).toBeUndefined();
+  });
+
+  it("shows each subagent's setup, and where each piece came from", async () => {
+    scriptChildren({ events: [answered({ label: "a" })] });
+    const result = await run({
+      debug_mode: true,
+      agent: "probe",
+      model: "other/model",
+      task: "label: a",
+    });
+
+    const [setup] = result.details.setups;
+    expect(setup).toMatchObject({
+      agent: "probe",
+      agentSource: "user",
+      prompt: ["agent"],
+      model: "other/model",
+      modelFrom: "call",
+      tools: ["bash", RESULT_TOOL, FAIL_TOOL],
+      toolsFrom: "agent",
+      schema: labelSchema,
+      schemaFrom: "agent",
+    });
+    expect(setup.command.slice(-spawnArgs().length)).toEqual(spawnArgs());
+
+    const text = result.content[0].text;
+    expect(text).toMatch(
+      /^Debug: how each subagent was set up\n\[1\] label: a\n/,
+    );
+    expect(text).toContain("agent: probe (yours)");
+    expect(text).toContain("model: other/model (from the call)");
+    expect(text).toContain(
+      `tools: bash, ${RESULT_TOOL}, ${FAIL_TOOL} (from the agent)`,
+    );
+    expect(text).toContain(
+      `schema (from the agent): ${JSON.stringify(labelSchema)}`,
+    );
+    expect(text).toContain("command: ");
+    expect(text).toContain("'label: a'");
+  });
+
+  it("describes the default agent with the call's prompt, tools and schema", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    const result = await run({
+      debug_mode: true,
+      task: "t",
+      system_prompt: "Be brief.",
+      tools: "read",
+      schema: DEFAULT_SCHEMA,
+    });
+    expect(result.details.setups[0]).toMatchObject({
+      prompt: ["call"],
+      modelFrom: undefined,
+      toolsFrom: "call",
+      schemaFrom: "call",
+    });
+    expect(result.content[0].text).toContain(
+      "system prompt: pi's, plus the call's system_prompt",
+    );
+    expect(result.content[0].text).toContain("model: pi's default");
+  });
+
+  it("streams the setup with the progress, and notes tasks that never started a child", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    const updates: string[] = [];
+    const result = await loadTool().execute(
+      "call-1",
+      {
+        debug_mode: true,
+        tasks: [{ task: "good" }, { task: "bad", agent: "nope" }],
+      },
+      undefined,
+      (u: any) => updates.push(u.content[0].text),
+    );
+
+    expect(
+      updates.some((u) => u.includes("[1] good — starting\n    agent: ")),
+    ).toBe(true);
+    expect(result.content[0].text).toContain(
+      "[2] bad\n    (no child was started)",
+    );
+  });
+});
