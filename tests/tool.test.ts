@@ -150,12 +150,13 @@ function argAfter(flag: string, call = 0): string | undefined {
 function loadExtension() {
   let tool: any;
   const flags: string[] = [];
+  const handlers: Record<string, any> = {};
   extension({
     registerTool: (t: any) => (tool = t),
     registerFlag: (name: string) => flags.push(name),
-    on: () => {},
+    on: (event: string, h: any) => (handlers[event] ??= h),
   } as any);
-  return { tool, flags };
+  return { tool, flags, handlers };
 }
 
 const loadTool = () => loadExtension().tool;
@@ -193,6 +194,12 @@ describe("registration", () => {
   it("registers --json-schema, so any pi run can ask for structured output", () => {
     expect(loadExtension().flags).toEqual([SCHEMA_FLAG]);
     expect(SCHEMA_FLAG).toBe("json-schema");
+  });
+
+  it("offers its own prompt templates", () => {
+    const { promptPaths } = loadExtension().handlers.resources_discover();
+    expect(promptPaths).toHaveLength(1);
+    expect(fs.existsSync(path.join(promptPaths[0], "jack-demo.md"))).toBe(true);
   });
 
   it("lists discovered agents in the tool description", () => {

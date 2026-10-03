@@ -55,6 +55,9 @@ export const MAX_PARALLEL = 2;
  */
 const THIS_EXTENSION = fileURLToPath(import.meta.url);
 
+/** Prompt templates that ship with this extension, e.g. `/jack-demo`. */
+const PROMPTS_DIR = fileURLToPath(new URL("./prompts", import.meta.url));
+
 /** Agent used when a call omits `agent`. */
 export const DEFAULT_AGENT = "worker";
 
@@ -905,6 +908,7 @@ function describeAgent(agent: AgentConfig): string {
 
 export default function (pi: ExtensionAPI) {
   registerJsonSchema(pi);
+  pi.on("resources_discover", () => ({ promptPaths: [PROMPTS_DIR] }));
 
   // List the agents known at load time so the model never has to guess a name.
   const { agents, errors } = discoverAgents();
