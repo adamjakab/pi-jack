@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { DEFAULT_SCHEMA, resolveSchema, schemaErrors } from "../contract.ts";
+import { DEFAULT_SCHEMA, resolveSchema, schemaErrors, schemaProblems } from "../contract.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-contract-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -66,6 +66,63 @@ describe("resolveSchema", () => {
 
   it("accepts an object root given by `properties` alone", () => {
     expect(() => resolveSchema({ properties: { a: { type: "string" } } }, tmp)).not.toThrow();
+  });
+});
+
+describe("schemaProblems", () => {
+  it("accepts well-formed schemas, including the default and a complex one", () => {
+    expect(schemaProblems(DEFAULT_SCHEMA)).toEqual([]);
+    expect(schemaProblems(verdictSchema)).toEqual([]);
+    expect(
+      schemaProblems({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: ["object", "null"],
+        properties: {
+          kind: { enum: ["a", "b"] },
+          code: { type: "string", pattern: "^[A-Z]{2}\\d+$", format: "uuid" },
+          n: { type: "number", minimum: 0, exclusiveMaximum: 1, multipleOf: 0.5 },
+          any: { anyOf: [{ type: "string" }, { type: "integer" }] },
+          tuple: { type: "array", prefixItems: [{ type: "string" }], items: false, uniqueItems: true },
+        },
+        $defs: { id: { type: "string" } },
+        additionalProperties: { type: "string" },
+      }),
+    ).toEqual([]);
+  });
+
+  it("reports typos that a validator would silently ignore", () => {
+    expect(
+      schemaProblems({ type: "object", properties: { a: { type: "strin" } }, requried: ["a"] }),
+    ).toEqual([
+      '/properties/a/type: "strin" is not a JSON Schema type (use string, number, integer, boolean, object, array, null)',
+      "/requried: unknown JSON Schema keyword",
+    ]);
+  });
+
+  it("reports keyword values of the wrong shape, at any depth", () => {
+    expect(
+      schemaProblems({
+        type: "object",
+        required: "a",
+        properties: {
+          list: { type: "array", items: { type: "object", maxItems: -1, properties: { p: "string" } } },
+          re: { type: "string", pattern: "(" },
+          pick: { anyOf: [] },
+        },
+      }),
+    ).toEqual([
+      "/required: must be a list of strings",
+      "/properties/list/items/maxItems: must be a non-negative integer",
+      "/properties/list/items/properties/p: a schema must be an object",
+      expect.stringMatching(/^\/properties\/re\/pattern: is not a valid regular expression/),
+      "/properties/pick/anyOf: must be a non-empty list of schemas",
+    ]);
+  });
+
+  it("makes resolveSchema refuse a malformed schema", () => {
+    expect(() => resolveSchema({ type: "object", properties: { a: { type: "strin" } } }, tmp)).toThrow(
+      /^\/properties\/a\/type: "strin" is not a JSON Schema type/,
+    );
   });
 });
 

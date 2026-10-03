@@ -77,7 +77,133 @@ export function resolveSchema(value: unknown, baseDir: string): TSchema {
   if (root.type !== "object" && root.properties === undefined) {
     throw new Error('the root of the schema must describe an object, e.g. {"type": "object", "properties": {...}}');
   }
+  const problems = schemaProblems(root);
+  if (problems.length > 0) throw new Error(problems.slice(0, 10).join("; "));
   return root as TSchema;
+}
+
+const JSON_TYPES = ["string", "number", "integer", "boolean", "object", "array", "null"];
+
+type Check = (value: unknown, at: string) => string[];
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const must = (ok: boolean, at: string, what: string): string[] => (ok ? [] : [`${at}: must be ${what}`]);
+
+const isString: Check = (v, at) => must(typeof v === "string", at, "a string");
+const isNumber: Check = (v, at) => must(typeof v === "number" && Number.isFinite(v), at, "a number");
+const isCount: Check = (v, at) => must(Number.isInteger(v) && (v as number) >= 0, at, "a non-negative integer");
+const isBoolean: Check = (v, at) => must(typeof v === "boolean", at, "true or false");
+const isAny: Check = () => [];
+const isSchema: Check = (v, at) => schemaProblems(v, at);
+const isSchemaOrBoolean: Check = (v, at) => (typeof v === "boolean" ? [] : schemaProblems(v, at));
+const isStringList: Check = (v, at) =>
+  must(Array.isArray(v) && v.every((x) => typeof x === "string"), at, "a list of strings");
+const isSchemaList: Check = (v, at) =>
+  Array.isArray(v) && v.length > 0
+    ? v.flatMap((x, i) => schemaProblems(x, `${at}/${i}`))
+    : [`${at}: must be a non-empty list of schemas`];
+const isSchemaMap: Check = (v, at) =>
+  isObject(v) ? Object.entries(v).flatMap(([k, x]) => schemaProblems(x, `${at}/${k}`)) : [`${at}: must be an object`];
+
+const isType: Check = (v, at) => {
+  const names = Array.isArray(v) ? v : [v];
+  if (names.length === 0) return [`${at}: must name at least one type`];
+  return names.flatMap((name) =>
+    typeof name === "string" && JSON_TYPES.includes(name)
+      ? []
+      : [`${at}: ${JSON.stringify(name)} is not a JSON Schema type (use ${JSON_TYPES.join(", ")})`],
+  );
+};
+
+const isPattern: Check = (v, at) => {
+  if (typeof v !== "string") return [`${at}: must be a string`];
+  try {
+    new RegExp(v, "u");
+    return [];
+  } catch (e) {
+    return [`${at}: is not a valid regular expression (${e instanceof Error ? e.message : e})`];
+  }
+};
+
+/** The JSON Schema keywords accepted, each with a check of its value. Anything else is reported as unknown. */
+const KEYWORDS: Record<string, Check> = {
+  // Identity and annotations
+  $schema: isString,
+  $id: isString,
+  $ref: isString,
+  $comment: isString,
+  $defs: isSchemaMap,
+  definitions: isSchemaMap,
+  title: isString,
+  description: isString,
+  default: isAny,
+  examples: (v, at) => must(Array.isArray(v), at, "a list"),
+  deprecated: isBoolean,
+  readOnly: isBoolean,
+  writeOnly: isBoolean,
+  // Any type
+  type: isType,
+  enum: (v, at) => must(Array.isArray(v) && v.length > 0, at, "a non-empty list"),
+  const: isAny,
+  allOf: isSchemaList,
+  anyOf: isSchemaList,
+  oneOf: isSchemaList,
+  not: isSchema,
+  if: isSchema,
+  then: isSchema,
+  else: isSchema,
+  // Objects
+  properties: isSchemaMap,
+  patternProperties: isSchemaMap,
+  additionalProperties: isSchemaOrBoolean,
+  unevaluatedProperties: isSchemaOrBoolean,
+  propertyNames: isSchema,
+  required: isStringList,
+  minProperties: isCount,
+  maxProperties: isCount,
+  dependentRequired: (v, at) =>
+    isObject(v) ? Object.entries(v).flatMap(([k, x]) => isStringList(x, `${at}/${k}`)) : [`${at}: must be an object`],
+  dependentSchemas: isSchemaMap,
+  // Arrays
+  items: (v, at) => (Array.isArray(v) ? isSchemaList(v, at) : isSchemaOrBoolean(v, at)),
+  prefixItems: isSchemaList,
+  additionalItems: isSchemaOrBoolean,
+  unevaluatedItems: isSchemaOrBoolean,
+  contains: isSchema,
+  minContains: isCount,
+  maxContains: isCount,
+  minItems: isCount,
+  maxItems: isCount,
+  uniqueItems: isBoolean,
+  // Strings
+  minLength: isCount,
+  maxLength: isCount,
+  pattern: isPattern,
+  format: isString,
+  contentEncoding: isString,
+  contentMediaType: isString,
+  // Numbers
+  minimum: isNumber,
+  maximum: isNumber,
+  exclusiveMinimum: isNumber,
+  exclusiveMaximum: isNumber,
+  multipleOf: (v, at) => must(typeof v === "number" && v > 0, at, "a positive number"),
+};
+
+/**
+ * Checks that `schema` is well-formed JSON Schema, as "/path: problem" lines; empty when it is.
+ *
+ * Validators silently ignore what they don't understand, so a typo like `"type": "strin"` or `"requried"` would
+ * otherwise turn a rule into no rule at all. This catches those before a subagent is started: unknown keywords,
+ * unknown type names, and keyword values of the wrong shape, recursively.
+ */
+export function schemaProblems(schema: unknown, at = ""): string[] {
+  if (!isObject(schema)) return [`${at || "/"}: a schema must be an object`];
+  return Object.entries(schema).flatMap(([keyword, value]) => {
+    const check = KEYWORDS[keyword];
+    const here = `${at}/${keyword}`;
+    return check ? check(value, here) : [`${here}: unknown JSON Schema keyword`];
+  });
 }
 
 /** Lists how `value` breaks `schema`, as "/path: message" lines (at most 10); empty when it conforms. */

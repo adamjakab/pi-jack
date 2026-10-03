@@ -24,7 +24,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import { Type, type TSchema } from "typebox";
-import { discoverAgents } from "./agents.ts";
+import { type AgentLoadError, discoverAgents } from "./agents.ts";
 import {
   DEFAULT_SCHEMA,
   FAIL_TOOL,
@@ -179,19 +179,26 @@ async function runSingleSubagent(
     usage: zeroUsage(),
   });
 
-  const agents = discoverAgents();
+  const { agents, errors: loadErrors } = discoverAgents();
   const agent = agents.find((a) => a.name === (agentNameInput ?? DEFAULT_AGENT));
   if (agentNameInput) {
     if (!agent) {
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+      const broken = loadErrors.length > 0 ? ` Agent files that failed to load: ${describeLoadErrors(loadErrors)}.` : "";
       return failure(
-        `Unknown agent: "${agentNameInput}". Available: ${available}. Omit \`agent\` to run the default subagent.`,
+        `Unknown agent: "${agentNameInput}". Available: ${available}.${broken} ` +
+          "Omit `agent` to run the default subagent.",
       );
     }
     agentPrompt = agent.systemPrompt;
     tools = agent.tools;
     model = agent.model;
   } else {
+    // A broken default agent file must not quietly turn into a bare pi agent.
+    const brokenDefault = loadErrors.find((e) => e.file === `${DEFAULT_AGENT}.md`);
+    if (!agent && brokenDefault) {
+      return failure(`The default agent file ${brokenDefault.file} could not be loaded: ${brokenDefault.message}`);
+    }
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
     agentPrompt = agent?.systemPrompt ?? "";
     extraPrompt = systemPromptInput;
@@ -580,12 +587,23 @@ export function getFinalAssistantText(messages: Message[]): string | undefined {
   return undefined;
 }
 
+function describeLoadErrors(errors: AgentLoadError[]): string {
+  return errors.map((e) => `${e.file} (${e.message})`).join("; ");
+}
+
 export default function (pi: ExtensionAPI) {
   // List the agents known at load time so the model never has to guess a name.
-  const agents = discoverAgents();
+  const { agents, errors } = discoverAgents();
   const available =
     agents.length > 0
       ? `Available agents:\n${agents.map((a) => `- ${a.name}: ${a.description}`).join("\n")}`
       : "Available agents: none (always omit `agent`).";
   pi.registerTool({ ...subagentRunnerTool, description: `${subagentRunnerTool.description}\n${available}` });
+
+  if (errors.length > 0) {
+    const message = `[subagent-runner] Agent files that failed to load: ${describeLoadErrors(errors)}`;
+    pi.on("session_start", (_event, ctx) => {
+      if (ctx.hasUI) ctx.ui.notify(message, "warning");
+    });
+  }
 }

@@ -87,7 +87,7 @@ function argAfter(flag: string, call = 0): string | undefined {
 
 function loadTool() {
   let tool: any;
-  extension({ registerTool: (t: any) => (tool = t) } as any);
+  extension({ registerTool: (t: any) => (tool = t), on: () => {} } as any);
   return tool;
 }
 
@@ -170,7 +170,8 @@ describe("single task", () => {
   });
 
   it("fails without spawning when the schema is unusable", async () => {
-    for (const schema of ["{not json", "missing.json", { type: "array", items: { type: "string" } }]) {
+    const typo = { type: "object", properties: { a: { type: "strin" } }, requried: ["a"] };
+    for (const schema of ["{not json", "missing.json", { type: "array", items: { type: "string" } }, typo]) {
       const result = await run({ task: "t", schema });
       expect(result.structuredContent.results[0].error).toMatch(/^Invalid schema: /);
     }
@@ -315,6 +316,37 @@ describe("named agent", () => {
     expect(fs.existsSync(path.dirname(argAfter(`--${SCHEMA_FLAG}`)!))).toBe(false);
   });
 
+  it("names agent files that failed to load, in the description and when an agent is not found", async () => {
+    const broken = path.join(agentDir.current, "agents", "broken.md");
+    fs.writeFileSync(broken, "---\nname: broken\ndescription: [\n---\nx\n");
+    try {
+      const description = loadTool().description;
+      const result = await run({ agent: "broken", task: "t" });
+
+      expect(description).toContain("- probe: Test probe");
+      expect(spawn).not.toHaveBeenCalled();
+      expect(result.structuredContent.results[0].error).toMatch(
+        /^Unknown agent: "broken"\. Available: "probe"\. Agent files that failed to load: broken\.md \(.+\)\./,
+      );
+    } finally {
+      fs.rmSync(broken);
+    }
+  });
+
+  it("warns the user at session start when agent files failed to load", () => {
+    const broken = path.join(agentDir.current, "agents", "broken.md");
+    fs.writeFileSync(broken, "---\nname: broken\ndescription: [\n---\nx\n");
+    try {
+      const handlers: Record<string, any> = {};
+      extension({ registerTool: () => {}, on: (event: string, h: any) => (handlers[event] = h) } as any);
+      const notify = vi.fn();
+      handlers.session_start({}, { hasUI: true, ui: { notify } });
+      expect(notify).toHaveBeenCalledWith(expect.stringMatching(/failed to load: broken\.md/), "warning");
+    } finally {
+      fs.rmSync(broken);
+    }
+  });
+
   it("fails cleanly for an unknown agent and lists the available ones", async () => {
     const result = await run({ agent: "nope", task: "t" });
 
@@ -341,6 +373,16 @@ describe("default agent", () => {
 
     expect(systemPrompts[0]).toBe("You are a worker.");
     expect(result.structuredContent.results[0]).toMatchObject({ success: true, agent: DEFAULT_AGENT });
+  });
+
+  it("fails instead of running a bare agent when the default agent file is broken", async () => {
+    fs.writeFileSync(workerFile, "---\nname: worker\ndescription: [\n---\nx\n");
+    const result = await run({ task: "t" });
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(result.structuredContent.results[0].error).toMatch(
+      new RegExp(`^The default agent file ${DEFAULT_AGENT}\\.md could not be loaded: `),
+    );
   });
 
   it("appends a call-level system_prompt and passes tools and model", async () => {

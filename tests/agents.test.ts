@@ -28,7 +28,7 @@ afterEach(() => {
 describe("discoverAgents", () => {
   it("returns nothing when the agents directory is missing", () => {
     fs.rmSync(path.join(agentDir.current, "agents"), { recursive: true });
-    expect(discoverAgents()).toEqual([]);
+    expect(discoverAgents()).toEqual({ agents: [], errors: [] });
   });
 
   it("parses frontmatter and body", () => {
@@ -37,7 +37,7 @@ describe("discoverAgents", () => {
       "---\nname: probe\ndescription: A probe\ntools: read, bash\nmodel: some-model\n" +
         "schema: '{\"ok\": \"boolean\"}'\n---\nYou are a probe.\n",
     );
-    expect(discoverAgents()).toEqual([
+    expect(discoverAgents().agents).toEqual([
       {
         name: "probe",
         description: "A probe",
@@ -52,13 +52,25 @@ describe("discoverAgents", () => {
 
   it("keeps a schema written as YAML as an object", () => {
     writeAgent("a.md", "---\nname: a\ndescription: d\nschema:\n  type: object\n  required: [ok]\n---\nbody\n");
-    expect(discoverAgents()[0].schema).toEqual({ type: "object", required: ["ok"] });
+    expect(discoverAgents().agents[0].schema).toEqual({ type: "object", required: ["ok"] });
   });
 
-  it("skips files without a name or description, and non-Markdown files", () => {
+  it("reports files without a name or description, and ignores non-Markdown files", () => {
     writeAgent("no-name.md", "---\ndescription: d\n---\nbody\n");
     writeAgent("no-description.md", "---\nname: x\n---\nbody\n");
     writeAgent("notes.txt", "---\nname: txt\ndescription: d\n---\nbody\n");
-    expect(discoverAgents()).toEqual([]);
+    const { agents, errors } = discoverAgents();
+    expect(agents).toEqual([]);
+    expect(errors.map((e) => e.file).sort()).toEqual(["no-description.md", "no-name.md"]);
+    expect(errors[0].message).toMatch(/needs a `name` and a `description`/);
+  });
+
+  it("reports a file whose frontmatter is not valid YAML, and still loads the others", () => {
+    writeAgent("broken.md", "---\nname: b\ndescription: d\nschema: {type: object, properties: [\n---\nbody\n");
+    writeAgent("good.md", "---\nname: good\ndescription: d\n---\nbody\n");
+    const { agents, errors } = discoverAgents();
+    expect(agents.map((a) => a.name)).toEqual(["good"]);
+    expect(errors).toEqual([{ file: "broken.md", message: expect.stringMatching(/^Flow sequence/) }]);
+    expect(errors[0].message).not.toContain("\n");
   });
 });

@@ -36,17 +36,29 @@ function parseSchema(value: unknown): unknown {
   return undefined;
 }
 
-export function discoverAgents(): AgentConfig[] {
+/** An agent file that could not be loaded, and why. */
+export interface AgentLoadError {
+  file: string;
+  message: string;
+}
+
+/**
+ * Loads every agent file. A file that can't be read or parsed is reported in `errors` instead of throwing, so one
+ * broken file never hides the others.
+ */
+export function discoverAgents(): { agents: AgentConfig[]; errors: AgentLoadError[] } {
   const dir = path.join(getAgentDir(), "agents");
   const agents: AgentConfig[] = [];
+  const errors: AgentLoadError[] = [];
 
-  if (!fs.existsSync(dir)) return agents;
+  if (!fs.existsSync(dir)) return { agents, errors };
 
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return agents;
+  } catch (e) {
+    errors.push({ file: dir, message: e instanceof Error ? e.message : String(e) });
+    return { agents, errors };
   }
 
   for (const entry of entries) {
@@ -54,22 +66,25 @@ export function discoverAgents(): AgentConfig[] {
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
     const filePath = path.join(dir, entry.name);
-    let content: string;
+    let parsed;
     try {
-      content = fs.readFileSync(filePath, "utf-8");
-    } catch {
+      parsed = parseFrontmatter<{
+        name?: unknown;
+        description?: unknown;
+        tools?: unknown;
+        model?: unknown;
+        schema?: unknown;
+      }>(fs.readFileSync(filePath, "utf-8"));
+    } catch (e) {
+      // Keep only the first line: YAML errors go on to draw the offending line with a caret.
+      const message = (e instanceof Error ? e.message : String(e)).split("\n")[0].replace(/:$/, "");
+      errors.push({ file: entry.name, message });
       continue;
     }
-
-    const { frontmatter, body } = parseFrontmatter<{
-      name?: unknown;
-      description?: unknown;
-      tools?: unknown;
-      model?: unknown;
-      schema?: unknown;
-    }>(content);
+    const { frontmatter, body } = parsed;
 
     if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
+      errors.push({ file: entry.name, message: "the frontmatter needs a `name` and a `description`" });
       continue;
     }
 
@@ -84,5 +99,5 @@ export function discoverAgents(): AgentConfig[] {
     });
   }
 
-  return agents;
+  return { agents, errors };
 }
