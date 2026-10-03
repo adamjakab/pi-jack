@@ -1,16 +1,21 @@
 /**
- * JACK, child side — loaded into every subagent with `--extension child.ts --jack-schema <file>`.
+ * `--json-schema <schema>`: makes a pi run finish with an answer that conforms to a JSON Schema. The value is an
+ * inline JSON Schema or a path to a `.json` file (relative to the working directory). Part of JACK: the parent starts
+ * every subagent with it, and it works the same in any pi run, e.g.
  *
- * Registers the two tools a subagent finishes with (see contract.ts):
+ *   pi --mode json -p --json-schema ./schema.json "Summarize this repository"
+ *
+ * Registers the two tools such a run finishes with (see contract.ts):
  *   - `jack_subagent_result`: parameters are the run's JSON Schema, with provider-side constrained sampling requested.
  *     Pi validates the arguments against it before the tool runs, and the tool checks them again; either way an
- *     invalid call is thrown back with the errors so the model can fix it. The parent stops the child once it has
- *     rejected more than MAX_FORMAT_RETRIES answers, since only it sees both kinds of rejection.
+ *     invalid call is thrown back with the errors so the model can fix it. For a subagent, JACK's parent stops the
+ *     child once it has rejected more than MAX_FORMAT_RETRIES answers, since only it sees both kinds of rejection.
  *   - `jack_subagent_fail({ reason })`: ends the run when the task cannot be completed.
  * If the agent is about to finish without calling either, a hidden message nudges it, up to MAX_FORMAT_RETRIES times.
  *
- * The parent reads the outcome from the `tool_execution_end` events of these tools in the child's JSON stream.
- * Does nothing unless `--jack-schema` is set, so it is inert if loaded anywhere else.
+ * With `--mode json`, the answer is `result.details` of the last successful `tool_execution_end` event of
+ * `jack_subagent_result` (or the reason, for `jack_subagent_fail`); that is where JACK's parent reads it.
+ * Does nothing unless `--json-schema` is set.
  */
 
 import {
@@ -28,10 +33,10 @@ import {
   schemaErrors,
 } from "./contract.ts";
 
-export default function subagentChild(pi: ExtensionAPI): void {
+export function registerJsonSchema(pi: ExtensionAPI): void {
   pi.registerFlag(SCHEMA_FLAG, {
     description:
-      "Internal to jack: path of the JSON Schema this subagent's answer must conform to",
+      "JSON Schema (inline JSON or path to a .json file) that the final answer must conform to",
     type: "string",
   });
 

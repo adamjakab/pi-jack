@@ -1,6 +1,6 @@
 /**
  * Tests the jack tool's execute() with `spawn` mocked, so no pi subprocess or model is involved.
- * Each fake child replays a scripted list of JSON events, then exits. A child answers the way child.ts makes a
+ * Each fake child replays a scripted list of JSON events, then exits. A child answers the way json-schema.ts makes a
  * real one answer: through `tool_execution_end` events of the jack_subagent_result / jack_subagent_fail tools.
  */
 
@@ -146,11 +146,19 @@ function argAfter(flag: string, call = 0): string | undefined {
   return args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 }
 
-function loadTool() {
+/** Loads the extension into a fake pi; returns the jack tool and the flags it registered. */
+function loadExtension() {
   let tool: any;
-  extension({ registerTool: (t: any) => (tool = t), on: () => {} } as any);
-  return tool;
+  const flags: string[] = [];
+  extension({
+    registerTool: (t: any) => (tool = t),
+    registerFlag: (name: string) => flags.push(name),
+    on: () => {},
+  } as any);
+  return { tool, flags };
 }
+
+const loadTool = () => loadExtension().tool;
 
 async function run(params: object) {
   return loadTool().execute("call-1", params, undefined, undefined);
@@ -182,6 +190,11 @@ beforeEach(() => {
 });
 
 describe("registration", () => {
+  it("registers --json-schema, so any pi run can ask for structured output", () => {
+    expect(loadExtension().flags).toEqual([SCHEMA_FLAG]);
+    expect(SCHEMA_FLAG).toBe("json-schema");
+  });
+
   it("lists discovered agents in the tool description", () => {
     expect(loadTool().description).toContain("- probe: Test probe");
   });
@@ -226,7 +239,7 @@ describe("single task", () => {
       expect.arrayContaining(["--mode", "json", "-p", "--no-session"]),
     );
     expect(argAfter("--exclude-tools")).toBe("jack");
-    expect(argAfter("--extension")).toMatch(/jack\/child\.ts$/);
+    expect(argAfter("--extension")).toMatch(/jack\/index\.ts$/);
     expect(argAfter("--model")).toBe("m1");
     expect(args).not.toContain("--tools");
     expect(args.at(-1)).toBe("t");
@@ -512,13 +525,16 @@ describe("named agent", () => {
     const broken = path.join(agentDir.current, "agents", "broken.md");
     fs.writeFileSync(broken, "---\nname: broken\ndescription: [\n---\nx\n");
     try {
-      const handlers: Record<string, any> = {};
+      const sessionStart: any[] = [];
       extension({
         registerTool: () => {},
-        on: (event: string, h: any) => (handlers[event] = h),
+        registerFlag: () => {},
+        getFlag: () => undefined,
+        on: (event: string, h: any) =>
+          event === "session_start" && sessionStart.push(h),
       } as any);
       const notify = vi.fn();
-      handlers.session_start({}, { hasUI: true, ui: { notify } });
+      for (const h of sessionStart) h({}, { hasUI: true, ui: { notify } });
       expect(notify).toHaveBeenCalledWith(
         expect.stringMatching(/failed to load: broken\.md/),
         "warning",

@@ -3,7 +3,7 @@
  *
  * A subagent answers by calling the `jack_subagent_result` tool, whose parameters are the run's JSON Schema, so each
  * field's `description` reaches the model right where it fills that field. It gives up by calling `jack_subagent_fail`
- * with a reason instead. Both tools live in child.ts, which the parent loads into every child; this module holds
+ * with a reason instead. Both tools live in json-schema.ts, behind the `--json-schema` flag; this module holds
  * what both sides share: the tool names, the default schema, schema loading, validation, and thinking levels.
  */
 
@@ -18,8 +18,11 @@ export const RESULT_TOOL = "jack_subagent_result";
 /** Tool a subagent calls, instead of RESULT_TOOL, when it cannot complete the task. */
 export const FAIL_TOOL = "jack_subagent_fail";
 
-/** CLI flag, registered by child.ts, that carries the path of the run's schema file to the child. */
-export const SCHEMA_FLAG = "jack-schema";
+/**
+ * CLI flag, registered by json-schema.ts, holding the JSON Schema the final answer must conform to. Named like Claude
+ * Code's flag of the same purpose. The parent passes each child the path of its schema file with it.
+ */
+export const SCHEMA_FLAG = "json-schema";
 
 /**
  * Thinking levels a subagent can be asked for, lowest first. They are passed to the child as `--thinking`; for a

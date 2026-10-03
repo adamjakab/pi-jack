@@ -7,10 +7,10 @@
  *   - Single:  { task: "...", agent?: "...", system_prompt?: "...", ... }
  *   - Batch:   { tasks: [{ task: "..." }, ...], run_mode: "sequential" | "parallel" }
  *
- * Child runs: pi --mode json -p --no-session --extension child.ts --jack-schema <file>
+ * Child runs: pi --mode json -p --no-session --extension <this file> --json-schema <file>
  * Without `agent`, the child runs as DEFAULT_AGENT (agents/worker.md), or a bare pi agent if that file is missing.
  *
- * Output contract (contract.ts, child.ts): every child has a JSON Schema (the call's `schema`, else the agent's
+ * Output contract (contract.ts, json-schema.ts): every child has a JSON Schema (the call's `schema`, else the agent's
  * `schema` frontmatter, else DEFAULT_SCHEMA) and answers by calling the `jack_subagent_result` tool, whose parameters
  * are that schema; it gives up with `jack_subagent_fail`. The child validates each answer and lets the model fix an
  * invalid one; this side reads the outcome from the child's tool events and validates the answer once more.
@@ -34,6 +34,7 @@ import {
   type AgentSource,
   discoverAgents,
 } from "./agents.ts";
+import { registerJsonSchema } from "./json-schema.ts";
 import {
   DEFAULT_SCHEMA,
   FAIL_TOOL,
@@ -48,8 +49,11 @@ import {
 
 export const MAX_PARALLEL = 2;
 
-/** The child-side extension that gives each subagent its result tools. */
-const CHILD_EXTENSION = fileURLToPath(new URL("./child.ts", import.meta.url));
+/**
+ * This extension, loaded into every child for its `--json-schema` flag. Pi loads an extension path only once, so
+ * this is a no-op where pi already discovers it on its own.
+ */
+const THIS_EXTENSION = fileURLToPath(import.meta.url);
 
 /** Agent used when a call omits `agent`. */
 export const DEFAULT_AGENT = "worker";
@@ -367,7 +371,7 @@ async function runSingleSubagent(
     ];
     args.push(
       "--extension",
-      CHILD_EXTENSION,
+      THIS_EXTENSION,
       `--${SCHEMA_FLAG}`,
       tmp.schemaPath,
     );
@@ -539,7 +543,7 @@ async function runChild(
         run.answer = event.result?.details;
         return;
       }
-      // Rejections come from pi's own argument validation as well as child.ts, so the cap is enforced here.
+      // Rejections come from pi's own argument validation as well as json-schema.ts, so the cap is enforced here.
       run.lastRejection =
         event.result?.content?.[0]?.text ?? "The answer was rejected.";
       rejections++;
@@ -900,6 +904,8 @@ function describeAgent(agent: AgentConfig): string {
 }
 
 export default function (pi: ExtensionAPI) {
+  registerJsonSchema(pi);
+
   // List the agents known at load time so the model never has to guess a name.
   const { agents, errors } = discoverAgents();
   const available =

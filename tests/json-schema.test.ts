@@ -1,5 +1,5 @@
 /**
- * Tests child.ts, the extension loaded into each subagent, against a fake `pi` API: flags, tools, the active tool
+ * Tests json-schema.ts, the `--json-schema` flag and its result tools, against a fake `pi` API: flags, tools, the active tool
  * set, and event handlers are recorded so each can be driven directly.
  */
 
@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import subagentChild from "../child.ts";
+import { registerJsonSchema } from "../json-schema.ts";
 import {
   FAIL_TOOL,
   MAX_FORMAT_RETRIES,
@@ -15,7 +15,7 @@ import {
   SCHEMA_FLAG,
 } from "../contract.ts";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-child-test-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-json-schema-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const schema = {
@@ -34,7 +34,7 @@ const schema = {
 const schemaFile = path.join(tmp, "schema.json");
 fs.writeFileSync(schemaFile, JSON.stringify(schema));
 
-/** Loads child.ts into a fake pi with the given flag value and starts a session. */
+/** Loads json-schema.ts into a fake pi with the given flag value and starts a session. */
 function startChild(flag: string | undefined, initialTools = ["read"]) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (event: any, ctx: any) => any>();
@@ -51,7 +51,7 @@ function startChild(flag: string | undefined, initialTools = ["read"]) {
     setActiveTools: (names: string[]) => (active = names),
     on: (event: string, handler: any) => handlers.set(event, handler),
   };
-  subagentChild(pi as any);
+  registerJsonSchema(pi as any);
   const ctx = { cwd: tmp, hasUI: false };
   handlers.get("session_start")!({}, ctx);
   handlers.get("before_agent_start")?.({}, ctx);
@@ -67,7 +67,7 @@ function startChild(flag: string | undefined, initialTools = ["read"]) {
   };
 }
 
-describe("child extension", () => {
+describe("--json-schema", () => {
   it("does nothing without the schema flag", () => {
     const child = startChild(undefined);
     expect(child.tools.size).toBe(0);
