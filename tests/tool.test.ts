@@ -17,6 +17,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
   getAgentDir: () => agentDir.current,
 }));
 
+// Built-in agents come from <agentDir>/built-in, so tests control them like the user's agents.
+vi.mock("../agents.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents.ts")>();
+  return { ...actual, discoverAgents: () => actual.discoverAgents(`${agentDir.current}/built-in`) };
+});
+
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
 const { spawn } = await import("node:child_process");
@@ -99,6 +105,7 @@ const labelSchema = { type: "object", properties: { label: { type: "string" } },
 
 agentDir.current = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-runner-test-"));
 fs.mkdirSync(path.join(agentDir.current, "agents"));
+fs.mkdirSync(path.join(agentDir.current, "built-in"));
 fs.writeFileSync(
   path.join(agentDir.current, "agents", "probe.md"),
   "---\nname: probe\ndescription: Test probe\ntools: bash\nmodel: probe-model\n" +
@@ -316,18 +323,28 @@ describe("named agent", () => {
     expect(fs.existsSync(path.dirname(argAfter(`--${SCHEMA_FLAG}`)!))).toBe(false);
   });
 
-  it("names agent files that failed to load, in the description and when an agent is not found", async () => {
+  it("names agent files that failed to load when an agent is not found", async () => {
     const broken = path.join(agentDir.current, "agents", "broken.md");
     fs.writeFileSync(broken, "---\nname: broken\ndescription: [\n---\nx\n");
     try {
-      const description = loadTool().description;
-      const result = await run({ agent: "broken", task: "t" });
+      const result = await run({ agent: "nope", task: "t" });
 
-      expect(description).toContain("- probe: Test probe");
       expect(spawn).not.toHaveBeenCalled();
       expect(result.structuredContent.results[0].error).toMatch(
-        /^Unknown agent: "broken"\. Available: "probe"\. Agent files that failed to load: broken\.md \(.+\)\./,
+        /^Unknown agent: "nope"\. Available: "probe"\. Agent files that failed to load: broken\.md \(.+\)\./,
       );
+    } finally {
+      fs.rmSync(broken);
+    }
+  });
+
+  it("fails with the load error when the requested agent's own file is broken", async () => {
+    const broken = path.join(agentDir.current, "agents", "broken.md");
+    fs.writeFileSync(broken, "---\nname: broken\ndescription: [\n---\nx\n");
+    try {
+      const result = await run({ agent: "broken", task: "t" });
+      expect(spawn).not.toHaveBeenCalled();
+      expect(result.structuredContent.results[0].error).toMatch(/^The agent file broken\.md could not be loaded: /);
     } finally {
       fs.rmSync(broken);
     }
@@ -353,6 +370,47 @@ describe("named agent", () => {
     expect(spawn).not.toHaveBeenCalled();
     expect(result.isError).toBe(true);
     expect(result.structuredContent.results[0].error).toMatch(/Unknown agent: "nope"\. Available: "probe"\./);
+  });
+});
+
+describe("built-in agents", () => {
+  const builtIn = path.join(agentDir.current, "built-in", "helper.md");
+  const override = path.join(agentDir.current, "agents", "helper.md");
+
+  beforeEach(() => {
+    fs.writeFileSync(builtIn, "---\nname: helper\ndescription: Built-in helper\n---\nBuilt-in prompt.\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(builtIn, { force: true });
+    fs.rmSync(override, { force: true });
+  });
+
+  it("are listed as built-in and can be run", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    const description = loadTool().description;
+    await run({ agent: "helper", task: "t" });
+
+    expect(description).toContain("- helper (built-in): Built-in helper");
+    expect(systemPrompts[0]).toBe("Built-in prompt.");
+  });
+
+  it("can be overridden by a user agent of the same name", async () => {
+    fs.writeFileSync(override, "---\nname: helper\ndescription: My helper\n---\nMy prompt.\n");
+    scriptChildren({ events: [answered(okAnswer)] });
+    const description = loadTool().description;
+    await run({ agent: "helper", task: "t" });
+
+    expect(description).toContain("- helper (yours, overrides built-in): My helper");
+    expect(systemPrompts[0]).toBe("My prompt.");
+  });
+
+  it("are not used in place of a user override whose file is broken", async () => {
+    fs.writeFileSync(override, "---\nname: helper\ndescription: [\n---\nx\n");
+    const result = await run({ agent: "helper", task: "t" });
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(result.structuredContent.results[0].error).toMatch(/^The agent file helper\.md could not be loaded: /);
   });
 });
 

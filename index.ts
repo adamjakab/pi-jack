@@ -24,7 +24,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import { Type, type TSchema } from "typebox";
-import { type AgentLoadError, discoverAgents } from "./agents.ts";
+import { type AgentConfig, type AgentLoadError, discoverAgents } from "./agents.ts";
 import {
   DEFAULT_SCHEMA,
   FAIL_TOOL,
@@ -180,7 +180,15 @@ async function runSingleSubagent(
   });
 
   const { agents, errors: loadErrors } = discoverAgents();
-  const agent = agents.find((a) => a.name === (agentNameInput ?? DEFAULT_AGENT));
+  const wanted = agentNameInput ?? DEFAULT_AGENT;
+  const agent = agents.find((a) => a.name === wanted);
+  // A broken file for the wanted agent must not quietly turn into another agent: the built-in one it was meant to
+  // override, or, for the default agent, a bare pi agent.
+  const brokenFile = loadErrors.find((e) => e.file === `${wanted}.md` && (e.source === "user" || !agent));
+  if (brokenFile) {
+    const which = agentNameInput ? "agent" : "default agent";
+    return failure(`The ${which} file ${brokenFile.file} could not be loaded: ${brokenFile.message}`);
+  }
   if (agentNameInput) {
     if (!agent) {
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
@@ -194,11 +202,6 @@ async function runSingleSubagent(
     tools = agent.tools;
     model = agent.model;
   } else {
-    // A broken default agent file must not quietly turn into a bare pi agent.
-    const brokenDefault = loadErrors.find((e) => e.file === `${DEFAULT_AGENT}.md`);
-    if (!agent && brokenDefault) {
-      return failure(`The default agent file ${brokenDefault.file} could not be loaded: ${brokenDefault.message}`);
-    }
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
     agentPrompt = agent?.systemPrompt ?? "";
     extraPrompt = systemPromptInput;
@@ -588,7 +591,12 @@ export function getFinalAssistantText(messages: Message[]): string | undefined {
 }
 
 function describeLoadErrors(errors: AgentLoadError[]): string {
-  return errors.map((e) => `${e.file} (${e.message})`).join("; ");
+  return errors.map((e) => `${e.file}${e.source === "built-in" ? " [built-in]" : ""} (${e.message})`).join("; ");
+}
+
+function describeAgent(agent: AgentConfig): string {
+  const origin = agent.overridesBuiltIn ? " (yours, overrides built-in)" : agent.source === "built-in" ? " (built-in)" : "";
+  return `- ${agent.name}${origin}: ${agent.description}`;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -596,7 +604,7 @@ export default function (pi: ExtensionAPI) {
   const { agents, errors } = discoverAgents();
   const available =
     agents.length > 0
-      ? `Available agents:\n${agents.map((a) => `- ${a.name}: ${a.description}`).join("\n")}`
+      ? `Available agents:\n${agents.map(describeAgent).join("\n")}`
       : "Available agents: none (always omit `agent`).";
   pi.registerTool({ ...subagentRunnerTool, description: `${subagentRunnerTool.description}\n${available}` });
 

@@ -10,6 +10,7 @@ Demonstrate the `subagent_runner` tool by surveying ${1:-the current folder} wit
 Call `subagent_runner` exactly **once**, with these parameters and nothing else:
 
 - run_mode: `parallel`
+- agent: `tester`
 - `schema`: this JSON Schema, as an object:
 
   ```json

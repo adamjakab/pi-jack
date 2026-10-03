@@ -10,15 +10,20 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
   getAgentDir: () => agentDir.current,
 }));
 
-const { discoverAgents } = await import("../agents.ts");
+const { BUILT_IN_AGENTS_DIR, discoverAgents: discoverWith } = await import("../agents.ts");
 
-function writeAgent(name: string, content: string) {
-  fs.writeFileSync(path.join(agentDir.current, "agents", name), content);
+// The user's agents live in <agentDir>/agents; tests use their own built-in folder unless they say otherwise.
+const builtInDir = () => path.join(agentDir.current, "built-in");
+const discoverAgents = () => discoverWith(builtInDir());
+
+function writeAgent(name: string, content: string, folder = path.join(agentDir.current, "agents")) {
+  fs.writeFileSync(path.join(folder, name), content);
 }
 
 beforeEach(() => {
   agentDir.current = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-runner-test-"));
   fs.mkdirSync(path.join(agentDir.current, "agents"));
+  fs.mkdirSync(builtInDir());
 });
 
 afterEach(() => {
@@ -45,6 +50,7 @@ describe("discoverAgents", () => {
         model: "some-model",
         schema: '{"ok": "boolean"}',
         dir: path.join(agentDir.current, "agents"),
+        source: "user",
         systemPrompt: expect.stringContaining("You are a probe."),
       },
     ]);
@@ -70,7 +76,33 @@ describe("discoverAgents", () => {
     writeAgent("good.md", "---\nname: good\ndescription: d\n---\nbody\n");
     const { agents, errors } = discoverAgents();
     expect(agents.map((a) => a.name)).toEqual(["good"]);
-    expect(errors).toEqual([{ file: "broken.md", message: expect.stringMatching(/^Flow sequence/) }]);
+    expect(errors).toEqual([{ file: "broken.md", source: "user", message: expect.stringMatching(/^Flow sequence/) }]);
     expect(errors[0].message).not.toContain("\n");
+  });
+
+  it("loads built-in agents, and lets a user agent of the same name replace one", () => {
+    writeAgent("worker.md", "---\nname: worker\ndescription: built-in\n---\nb\n", builtInDir());
+    writeAgent("helper.md", "---\nname: helper\ndescription: built-in\n---\nb\n", builtInDir());
+    writeAgent("worker.md", "---\nname: worker\ndescription: mine\n---\nu\n");
+
+    const { agents } = discoverAgents();
+    expect(agents.map((a) => [a.name, a.description, a.source, a.overridesBuiltIn])).toEqual([
+      ["helper", "built-in", "built-in", undefined],
+      ["worker", "mine", "user", true],
+    ]);
+    expect(agents.find((a) => a.name === "helper")!.dir).toBe(builtInDir());
+  });
+
+  it("reports which folder a broken file is in", () => {
+    writeAgent("bad.md", "---\ndescription: d\n---\nb\n", builtInDir());
+    expect(discoverAgents().errors).toEqual([expect.objectContaining({ file: "bad.md", source: "built-in" })]);
+  });
+});
+
+describe("built-in agents", () => {
+  it("ships a loadable worker agent", () => {
+    const { agents, errors } = discoverWith(BUILT_IN_AGENTS_DIR);
+    expect(errors).toEqual([]);
+    expect(agents.find((a) => a.name === "worker")).toMatchObject({ source: "built-in", dir: BUILT_IN_AGENTS_DIR });
   });
 });
