@@ -2,12 +2,42 @@
   "name": "jack",
   "version": "1.0.0",
   "private": true,
-  "description": "JACK (JSON Agent Contractor Kit): delegates tasks to subagents that answer in a JSON Schema.",
+  "description": "JACK (JSON Agent Contractor Kit): a Pi extension that delegates tasks to subagents answering in a JSON Schema, and adds a --json-schema flag for structured output from any pi run.",
+  "keywords": [
+    "pi-package"
+  ],
   "type": "module",
   "main": "index.ts",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "scripts": {
-    "test": "vitest run --root ../.. --project jack",
-    "test:watch": "vitest --root ../.. --project jack",
-    "test:e2e": "node tests/test-tool.ts"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "node tests/test-tool.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9",
+    "vitest": "^5.0.3"
   }
 }

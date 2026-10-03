@@ -2,17 +2,23 @@
  * Test subagent with schema enforcement
  */
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// The repository root, used as a sample folder to survey.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const args = [
-  "--mode", "json",
+  "--mode",
+  "json",
   "-p",
   "--no-session",
-  "--exclude-tools", "jack",
-  "Count .ts files in /home/jackisback/WslCode/Pi/myPi/extensions. Return ONLY valid JSON matching: {\"count\": number, \"files\": [\"string\"]}",
+  "--exclude-tools",
+  "jack",
+  `Count .ts files in ${ROOT}. Return ONLY valid JSON matching: {"count": number, "files": ["string"]}`,
 ];
 
 const proc = spawn("pi", args, {
-  cwd: "/home/jackisback/WslCode/Pi/myPi",
+  cwd: ROOT,
   shell: false,
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -20,8 +26,12 @@ const proc = spawn("pi", args, {
 let stdout = "";
 let stderr = "";
 
-proc.stdout.on("data", (d) => { stdout += d.toString(); });
-proc.stderr.on("data", (d) => { stderr += d.toString(); });
+proc.stdout.on("data", (d) => {
+  stdout += d.toString();
+});
+proc.stderr.on("data", (d) => {
+  stderr += d.toString();
+});
 
 proc.on("close", (code) => {
   console.log("Exit code:", code);
@@ -34,16 +44,23 @@ proc.on("close", (code) => {
     try {
       const ev = JSON.parse(line);
       if (ev.type === "message_end" && ev.message?.role === "assistant") {
-        const text = ev.message.content?.find((c: any) => c.type === "text")?.text;
+        const text = ev.message.content?.find(
+          (c: any) => c.type === "text",
+        )?.text;
         if (text) lastAssistantText = text;
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   console.log("\nRaw assistant text:", lastAssistantText ?? "(none)");
 
   if (lastAssistantText) {
-    const cleaned = lastAssistantText.replace(/^```json\s*/, "").replace(/\s*```$/, "").trim();
+    const cleaned = lastAssistantText
+      .replace(/^```json\s*/, "")
+      .replace(/\s*```$/, "")
+      .trim();
     try {
       const parsed = JSON.parse(cleaned);
       console.log("Parsed JSON:", JSON.stringify(parsed, null, 2));

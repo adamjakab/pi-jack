@@ -2,19 +2,25 @@
  * Integration test: simulate the exact args the tool uses
  */
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+// The repository root, used as a sample folder to survey.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const args = [
-  "--mode", "json",
+  "--mode",
+  "json",
   "-p",
   "--no-session",
-  "--exclude-tools", "jack",
-  "list the files in /home/jackisback/WslCode/Pi/myPi",
+  "--exclude-tools",
+  "jack",
+  `list the files in ${ROOT}`,
 ];
 
 console.log("Spawning:", "pi", args.join(" "));
 
 const proc = spawn("pi", args, {
-  cwd: "/home/jackisback/WslCode/Pi/myPi",
+  cwd: ROOT,
   shell: false,
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -22,8 +28,12 @@ const proc = spawn("pi", args, {
 let stdout = "";
 let stderr = "";
 
-proc.stdout.on("data", (d) => { stdout += d.toString(); });
-proc.stderr.on("data", (d) => { stderr += d.toString(); });
+proc.stdout.on("data", (d) => {
+  stdout += d.toString();
+});
+proc.stderr.on("data", (d) => {
+  stderr += d.toString();
+});
 
 proc.on("close", (code) => {
   console.log("Exit code:", code);
@@ -39,11 +49,15 @@ proc.on("close", (code) => {
       const ev = JSON.parse(line);
       if (ev.type === "message_end" && ev.message?.role === "assistant") {
         assistantTurns++;
-        const text = ev.message.content?.find((c: any) => c.type === "text")?.text;
+        const text = ev.message.content?.find(
+          (c: any) => c.type === "text",
+        )?.text;
         if (text) lastText = text;
       }
       if (ev.type === "tool_execution_start") toolCalls++;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   console.log("\nAssistant turns:", assistantTurns);
