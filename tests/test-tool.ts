@@ -1,5 +1,5 @@
 /**
- * End-to-end test of the subagent_runner tool: drives a parent pi that calls the tool,
+ * End-to-end test of the jack tool: drives a parent pi that calls the tool,
  * then checks the tool results. Requires agents/parallel-probe.md. Cases run concurrently.
  */
 import { spawn } from "node:child_process";
@@ -47,7 +47,7 @@ function runParent(prompt: string): Promise<ParentRun> {
         } catch {
           continue;
         }
-        if (ev.toolName !== "subagent_runner") continue;
+        if (ev.toolName !== "jack") continue;
         if (ev.type === "tool_execution_start") {
           tools.set(ev.toolCallId, { args: ev.args, result: null, startedAt: Date.now(), endedAt: 0 });
         } else if (ev.type === "tool_execution_end") {
@@ -82,7 +82,7 @@ const cases: Record<string, () => Promise<string[]>> = {
   async "named agent, parallel batch"() {
     const failures: string[] = [];
     const run = await runParent(
-      "Call the subagent_runner tool exactly once with: agent='parallel-probe', run_mode='parallel', " +
+      "Call the jack tool exactly once with: agent='parallel-probe', run_mode='parallel', " +
         "tasks = 3 items whose task text is 'label: w1', 'label: w2', 'label: w3'. Then stop.",
     );
     if (!finished(failures, run, 1)) return failures;
@@ -110,7 +110,7 @@ const cases: Record<string, () => Promise<string[]>> = {
   async "no schema falls back to the default { result } schema"() {
     const failures: string[] = [];
     const run = await runParent(
-      "Call the subagent_runner tool exactly once with task='Reply with the single word hello.' and tools='read'. " +
+      "Call the jack tool exactly once with task='Reply with the single word hello.' and tools='read'. " +
         "Do not pass a schema. Then stop.",
     );
     if (!finished(failures, run, 1)) return failures;
@@ -125,7 +125,7 @@ const cases: Record<string, () => Promise<string[]>> = {
   async "unknown agent fails cleanly"() {
     const failures: string[] = [];
     const run = await runParent(
-      "Call the subagent_runner tool exactly once with agent='does-not-exist' and task='anything'. Then stop.",
+      "Call the jack tool exactly once with agent='does-not-exist' and task='anything'. Then stop.",
     );
     if (!finished(failures, run, 1)) return failures;
 
@@ -141,7 +141,7 @@ const cases: Record<string, () => Promise<string[]>> = {
   async "separate tool calls in one turn"() {
     const failures: string[] = [];
     const run = await runParent(
-      "In a SINGLE assistant turn, emit THREE separate subagent_runner tool calls at once (parallel tool calls, " +
+      "In a SINGLE assistant turn, emit THREE separate jack tool calls at once (parallel tool calls, " +
         "not one batch). Each call has agent='parallel-probe' and task = 'label: d1' / 'label: d2' / 'label: d3' " +
         "respectively. Then stop.",
     );

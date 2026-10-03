@@ -1,13 +1,13 @@
 ---
-description: Demo of subagent_runner, four read-only subagents surveying a folder in parallel
+description: Demo of jack, four read-only subagents surveying a folder in parallel
 argument-hint: "[path]"
 ---
 
 # Subagents Demo
 
-Demonstrate the `subagent_runner` tool by surveying ${1:-the current folder} with multiple tasks carried out by independent agents.
+Demonstrate the `jack` tool by surveying ${1:-the current folder} with multiple tasks carried out by independent agents.
 
-Call `subagent_runner` exactly **once**, with these parameters and nothing else:
+Call `jack` exactly **once**, with these parameters and nothing else:
 
 - debug_mode: false
 - run_mode: `parallel`

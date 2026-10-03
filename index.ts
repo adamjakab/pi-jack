@@ -1,5 +1,5 @@
 /**
- * Subagent Runner — delegates tasks to isolated pi subprocesses with structured JSON output.
+ * JACK (JSON Agent Contractor Kit) — delegates tasks to isolated pi subprocesses with structured JSON output.
  *
  * Supports single task or batch execution with configurable concurrency.
  *
@@ -7,12 +7,12 @@
  *   - Single:  { task: "...", agent?: "...", system_prompt?: "...", ... }
  *   - Batch:   { tasks: [{ task: "..." }, ...], run_mode: "sequential" | "parallel" }
  *
- * Child runs: pi --mode json -p --no-session --extension child.ts --subagent-schema <file>
+ * Child runs: pi --mode json -p --no-session --extension child.ts --jack-schema <file>
  * Without `agent`, the child runs as DEFAULT_AGENT (agents/worker.md), or a bare pi agent if that file is missing.
  *
  * Output contract (contract.ts, child.ts): every child has a JSON Schema (the call's `schema`, else the agent's
- * `schema` frontmatter, else DEFAULT_SCHEMA) and answers by calling the `subagent_result` tool, whose parameters
- * are that schema; it gives up with `subagent_fail`. The child validates each answer and lets the model fix an
+ * `schema` frontmatter, else DEFAULT_SCHEMA) and answers by calling the `jack_subagent_result` tool, whose parameters
+ * are that schema; it gives up with `jack_subagent_fail`. The child validates each answer and lets the model fix an
  * invalid one; this side reads the outcome from the child's tool events and validates the answer once more.
  */
 
@@ -77,7 +77,7 @@ async function writeTempFiles(
   schema: TSchema,
   prompt: string,
 ): Promise<{ dir: string; schemaPath: string; promptPath?: string }> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-jack-"));
   const write = (filePath: string, text: string) =>
     withFileMutationQueue(filePath, () =>
       fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 }),
@@ -126,7 +126,7 @@ interface SingleResult {
   agent: string;
   task: string;
   error?: string;
-  /** How many answers the subagent submitted with `subagent_result`, valid or not. */
+  /** How many answers the subagent submitted with `jack_subagent_result`, valid or not. */
   attempts: number;
   usage: SubagentUsage;
   /** The model and thinking level the subagent's last turn actually ran with, from its messages. */
@@ -364,7 +364,7 @@ async function runSingleSubagent(
       "-p",
       "--no-session",
       "--exclude-tools",
-      "subagent_runner",
+      "jack",
     ];
     args.push(
       "--extension",
@@ -473,15 +473,15 @@ interface ChildRun {
   stderr: string;
   /** The child's final assistant text, or "" when it gave none. Informational only; the answer is `answer`. */
   raw: string;
-  /** Arguments of the last accepted `subagent_result` call. */
+  /** Arguments of the last accepted `jack_subagent_result` call. */
   answer?: unknown;
-  /** Reason given to `subagent_fail`, if the child gave up. */
+  /** Reason given to `jack_subagent_fail`, if the child gave up. */
   failReason?: string;
-  /** Number of `subagent_result` calls, accepted or not. */
+  /** Number of `jack_subagent_result` calls, accepted or not. */
   submissions: number;
   /** Model and thinking level of the last assistant turn. */
   ranWith?: RanWith;
-  /** What the child said about the last rejected `subagent_result` call. */
+  /** What the child said about the last rejected `jack_subagent_result` call. */
   lastRejection?: string;
   /** Set when the child was stopped for using up MAX_FORMAT_RETRIES. */
   retriesExhausted?: boolean;
@@ -613,11 +613,11 @@ export async function mapWithLimit<TIn, TOut>(
   return results;
 }
 
-const subagentRunnerTool = defineTool({
-  name: "subagent_runner",
-  label: "Subagent Runner",
+const jackTool = defineTool({
+  name: "jack",
+  label: "JACK",
   description:
-    "Delegate tasks to isolated pi subprocesses with structured JSON output.\n" +
+    "JACK (JSON Agent Contractor Kit): delegate tasks to subagents, isolated pi subprocesses that answer in a JSON Schema.\n" +
     "Single task: pass `task`.\n" +
     "Batch: pass `tasks` array with `run_mode: 'sequential' (default) or 'parallel'`.\n" +
     `No agent (the usual case): omit \`agent\`; the subagent is the default \`${DEFAULT_AGENT}\` agent, ` +
@@ -909,12 +909,12 @@ export default function (pi: ExtensionAPI) {
       ? `Available agents:\n${agents.map(describeAgent).join("\n")}`
       : "Available agents: none (always omit `agent`).";
   pi.registerTool({
-    ...subagentRunnerTool,
-    description: `${subagentRunnerTool.description}\n${available}`,
+    ...jackTool,
+    description: `${jackTool.description}\n${available}`,
   });
 
   if (errors.length > 0) {
-    const message = `[subagent-runner] Agent files that failed to load: ${describeLoadErrors(errors)}`;
+    const message = `[jack] Agent files that failed to load: ${describeLoadErrors(errors)}`;
     pi.on("session_start", (_event, ctx) => {
       if (ctx.hasUI) ctx.ui.notify(message, "warning");
     });

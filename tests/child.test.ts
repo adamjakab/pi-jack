@@ -16,7 +16,7 @@ import {
   THINKING_FLAG,
 } from "../contract.ts";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-child-test-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-child-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const schema = {
@@ -114,7 +114,7 @@ describe("child extension", () => {
     const bad = { count: "two", files: ["a.ts"] };
     for (let i = 0; i < 3; i++) {
       await expect(child.call(RESULT_TOOL, bad)).rejects.toThrow(
-        /call subagent_result again:\n- \/count: /,
+        /call jack_subagent_result again:\n- \/count: /,
       );
     }
     // Still waiting for an answer, so it gets nudged.
@@ -148,7 +148,7 @@ describe("child extension", () => {
     expect(child.tools.size).toBe(0);
     expect(child.logged).toEqual([
       expect.stringMatching(
-        /^\[subagent\] Could not load the schema: .*missing\.json/,
+        /^\[jack\] Could not load the schema: .*missing\.json/,
       ),
     ]);
   });
@@ -190,8 +190,6 @@ describe("thinking level", () => {
       model: upToHigh,
     });
     expect(child.thinkingLevels).toEqual([]);
-    expect(child.logged).toEqual([
-      '[subagent] Unknown thinking level: "minimal"',
-    ]);
+    expect(child.logged).toEqual(['[jack] Unknown thinking level: "minimal"']);
   });
 });

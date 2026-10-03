@@ -1,7 +1,7 @@
 /**
- * Tests the subagent_runner tool's execute() with `spawn` mocked, so no pi subprocess or model is involved.
+ * Tests the jack tool's execute() with `spawn` mocked, so no pi subprocess or model is involved.
  * Each fake child replays a scripted list of JSON events, then exits. A child answers the way child.ts makes a
- * real one answer: through `tool_execution_end` events of the subagent_result / subagent_fail tools.
+ * real one answer: through `tool_execution_end` events of the jack_subagent_result / jack_subagent_fail tools.
  */
 
 import { EventEmitter } from "node:events";
@@ -73,7 +73,7 @@ function assistantEnd(text: string) {
   };
 }
 
-/** An accepted subagent_result call carrying `answer`. */
+/** An accepted jack_subagent_result call carrying `answer`. */
 function answered(answer: object) {
   return {
     type: "tool_execution_end",
@@ -83,7 +83,7 @@ function answered(answer: object) {
   };
 }
 
-/** A subagent_result call the child rejected with `text`. */
+/** A jack_subagent_result call the child rejected with `text`. */
 function rejected(text: string) {
   return {
     type: "tool_execution_end",
@@ -163,9 +163,7 @@ const labelSchema = {
   required: ["label"],
 };
 
-agentDir.current = fs.mkdtempSync(
-  path.join(os.tmpdir(), "subagent-runner-test-"),
-);
+agentDir.current = fs.mkdtempSync(path.join(os.tmpdir(), "jack-test-"));
 fs.mkdirSync(path.join(agentDir.current, "agents"));
 fs.mkdirSync(path.join(agentDir.current, "built-in"));
 fs.writeFileSync(
@@ -220,7 +218,7 @@ describe("single task", () => {
     );
   });
 
-  it("loads the child extension with the schema file and never lets the child call subagent_runner", async () => {
+  it("loads the child extension with the schema file and never lets the child call jack", async () => {
     scriptChildren({ events: [answered(okAnswer)] });
     await run({ task: "t", model: "m1" });
 
@@ -228,8 +226,8 @@ describe("single task", () => {
     expect(args).toEqual(
       expect.arrayContaining(["--mode", "json", "-p", "--no-session"]),
     );
-    expect(argAfter("--exclude-tools")).toBe("subagent_runner");
-    expect(argAfter("--extension")).toMatch(/subagent-runner\/child\.ts$/);
+    expect(argAfter("--exclude-tools")).toBe("jack");
+    expect(argAfter("--extension")).toMatch(/jack\/child\.ts$/);
     expect(argAfter("--model")).toBe("m1");
     expect(args).not.toContain("--tools");
     expect(args.at(-1)).toBe("t");
@@ -286,7 +284,7 @@ describe("single task", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("fails with the reason the subagent gave to subagent_fail", async () => {
+  it("fails with the reason the subagent gave to jack_subagent_fail", async () => {
     scriptChildren({ events: [gaveUp("repo not found")] });
     const result = await run({ task: "t" });
 
@@ -350,7 +348,7 @@ describe("single task", () => {
     });
   });
 
-  it("fails when the subagent never calls subagent_result", async () => {
+  it("fails when the subagent never calls jack_subagent_result", async () => {
     scriptChildren({ events: [assistantEnd("here is my answer in prose")] });
     const result = await run({ task: "t" });
 

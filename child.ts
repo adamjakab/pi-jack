@@ -1,19 +1,19 @@
 /**
- * Subagent Runner, child side — loaded into every subagent with `--extension child.ts --subagent-schema <file>`.
+ * JACK, child side — loaded into every subagent with `--extension child.ts --jack-schema <file>`.
  *
  * Registers the two tools a subagent finishes with (see contract.ts):
- *   - `subagent_result`: parameters are the run's JSON Schema, with provider-side constrained sampling requested.
+ *   - `jack_subagent_result`: parameters are the run's JSON Schema, with provider-side constrained sampling requested.
  *     Pi validates the arguments against it before the tool runs, and the tool checks them again; either way an
  *     invalid call is thrown back with the errors so the model can fix it. The parent stops the child once it has
  *     rejected more than MAX_FORMAT_RETRIES answers, since only it sees both kinds of rejection.
- *   - `subagent_fail({ reason })`: ends the run when the task cannot be completed.
+ *   - `jack_subagent_fail({ reason })`: ends the run when the task cannot be completed.
  * If the agent is about to finish without calling either, a hidden message nudges it, up to MAX_FORMAT_RETRIES times.
  *
- * With `--subagent-thinking <level>`, it also sets the thinking level: the requested one if the model supports it,
+ * With `--jack-thinking <level>`, it also sets the thinking level: the requested one if the model supports it,
  * else the next lower one (see pickThinkingLevel). The level each turn ran at shows in its `message_end` event.
  *
  * The parent reads the outcome from the `tool_execution_end` events of these tools in the child's JSON stream.
- * Does nothing unless `--subagent-schema` is set, so it is inert if loaded anywhere else.
+ * Does nothing unless `--jack-schema` is set, so it is inert if loaded anywhere else.
  */
 
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -38,12 +38,12 @@ import {
 export default function subagentChild(pi: ExtensionAPI): void {
   pi.registerFlag(SCHEMA_FLAG, {
     description:
-      "Internal to subagent_runner: path of the JSON Schema this subagent's answer must conform to",
+      "Internal to jack: path of the JSON Schema this subagent's answer must conform to",
     type: "string",
   });
   pi.registerFlag(THINKING_FLAG, {
     description:
-      "Internal to subagent_runner: thinking level for this subagent, lowered to what the model supports",
+      "Internal to jack: thinking level for this subagent, lowered to what the model supports",
     type: "string",
   });
 
@@ -65,10 +65,7 @@ export default function subagentChild(pi: ExtensionAPI): void {
           : "off",
       );
     } else if (thinking) {
-      report(
-        ctx,
-        `[subagent] Unknown thinking level: ${JSON.stringify(thinking)}`,
-      );
+      report(ctx, `[jack] Unknown thinking level: ${JSON.stringify(thinking)}`);
     }
 
     const schemaPath = pi.getFlag(SCHEMA_FLAG);
@@ -80,7 +77,7 @@ export default function subagentChild(pi: ExtensionAPI): void {
     } catch (e) {
       report(
         ctx,
-        `[subagent] Could not load the schema: ${e instanceof Error ? e.message : e}`,
+        `[jack] Could not load the schema: ${e instanceof Error ? e.message : e}`,
       );
       return;
     }
@@ -151,7 +148,7 @@ export default function subagentChild(pi: ExtensionAPI): void {
     if (!pi.getActiveTools().includes(RESULT_TOOL)) {
       report(
         ctx,
-        `[subagent] The ${RESULT_TOOL} tool is not available; it must not be excluded from the tool list.`,
+        `[jack] The ${RESULT_TOOL} tool is not available; it must not be excluded from the tool list.`,
       );
     }
   });
@@ -174,7 +171,7 @@ export default function subagentChild(pi: ExtensionAPI): void {
       entries: [
         {
           type: "custom_message",
-          customType: "subagent-result-nudge",
+          customType: "jack-result-nudge",
           display: false,
           content:
             `You have not submitted an answer. Call ${RESULT_TOOL} now with your answer as its arguments ` +

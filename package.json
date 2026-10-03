@@ -1,13 +1,13 @@
 {
-  "name": "subagent-runner",
+  "name": "jack",
   "version": "1.0.0",
   "private": true,
-  "description": "Simple subagent extension with structured JSON output.",
+  "description": "JACK (JSON Agent Contractor Kit): delegates tasks to subagents that answer in a JSON Schema.",
   "type": "module",
   "main": "index.ts",
   "scripts": {
-    "test": "vitest run --root ../.. --project subagent-runner",
-    "test:watch": "vitest --root ../.. --project subagent-runner",
+    "test": "vitest run --root ../.. --project jack",
+    "test:watch": "vitest --root ../.. --project jack",
     "test:e2e": "node tests/test-tool.ts"
   }
 }

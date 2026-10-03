@@ -7,7 +7,7 @@ const args = [
   "--mode", "json",
   "-p",
   "--no-session",
-  "--exclude-tools", "subagent_runner",
+  "--exclude-tools", "jack",
   "list the files in /home/jackisback/WslCode/Pi/myPi",
 ];
 

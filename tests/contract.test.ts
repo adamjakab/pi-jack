@@ -11,7 +11,7 @@ import {
   schemaProblems,
 } from "../contract.ts";
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-contract-test-"));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-contract-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 // A schema as demanding as the ones real callers pass: descriptions everywhere, nested arrays of objects,

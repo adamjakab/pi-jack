@@ -7,7 +7,7 @@ const args = [
   "--mode", "json",
   "-p",
   "--no-session",
-  "--exclude-tools", "subagent_runner",
+  "--exclude-tools", "jack",
   "Count .ts files in /home/jackisback/WslCode/Pi/myPi/extensions. Return ONLY valid JSON matching: {\"count\": number, \"files\": [\"string\"]}",
 ];
 

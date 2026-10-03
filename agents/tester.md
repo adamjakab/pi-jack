@@ -1,6 +1,6 @@
 ---
 name: tester
-description: Subagent for subagent_runner running in isolated context cabable of code validation.
+description: Subagent for jack running in isolated context cabable of code validation.
 tools: read, bash, grep, find, ls
 ---
 

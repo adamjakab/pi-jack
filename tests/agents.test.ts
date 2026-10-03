@@ -26,9 +26,7 @@ function writeAgent(
 }
 
 beforeEach(() => {
-  agentDir.current = fs.mkdtempSync(
-    path.join(os.tmpdir(), "subagent-runner-test-"),
-  );
+  agentDir.current = fs.mkdtempSync(path.join(os.tmpdir(), "jack-test-"));
   fs.mkdirSync(path.join(agentDir.current, "agents"));
   fs.mkdirSync(builtInDir());
 });

@@ -1,8 +1,8 @@
 /**
- * The output contract between subagent_runner (the parent) and its subagents (child pi processes).
+ * The output contract between jack (the parent) and its subagents (child pi processes).
  *
- * A subagent answers by calling the `subagent_result` tool, whose parameters are the run's JSON Schema, so each
- * field's `description` reaches the model right where it fills that field. It gives up by calling `subagent_fail`
+ * A subagent answers by calling the `jack_subagent_result` tool, whose parameters are the run's JSON Schema, so each
+ * field's `description` reaches the model right where it fills that field. It gives up by calling `jack_subagent_fail`
  * with a reason instead. Both tools live in child.ts, which the parent loads into every child; this module holds
  * what both sides share: the tool names, the default schema, schema loading, validation, and thinking levels.
  */
@@ -13,16 +13,16 @@ import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 
 /** Tool a subagent calls with its answer; its parameters are the run's schema. */
-export const RESULT_TOOL = "subagent_result";
+export const RESULT_TOOL = "jack_subagent_result";
 
 /** Tool a subagent calls, instead of RESULT_TOOL, when it cannot complete the task. */
-export const FAIL_TOOL = "subagent_fail";
+export const FAIL_TOOL = "jack_subagent_fail";
 
 /** CLI flag, registered by child.ts, that carries the path of the run's schema file to the child. */
-export const SCHEMA_FLAG = "subagent-schema";
+export const SCHEMA_FLAG = "jack-schema";
 
 /** CLI flag, registered by child.ts, that carries the requested thinking level to the child. */
-export const THINKING_FLAG = "subagent-thinking";
+export const THINKING_FLAG = "jack-thinking";
 
 /** Thinking levels a subagent can be asked for, lowest first. */
 export const THINKING_LEVELS = [
@@ -54,7 +54,7 @@ export function pickThinkingLevel(
 }
 
 /**
- * How many invalid answers or nudges a subagent gets after its first try. An invalid `subagent_result` call is
+ * How many invalid answers or nudges a subagent gets after its first try. An invalid `jack_subagent_result` call is
  * thrown back with its errors so the model can fix it; finishing without calling either tool earns a nudge.
  */
 export const MAX_FORMAT_RETRIES = 2;

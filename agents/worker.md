@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Default subagent for subagent_runner - General-purpose, full capabilities, isolated context.
+description: Default subagent for jack - General-purpose, full capabilities, isolated context.
 tools: read, bash, edit, write, grep, find, ls
 ---
 
