@@ -1,13 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { getFinalAssistantText, mapWithLimit, normalizeTools, taskLabel } from "../index.ts";
+import {
+  getFinalAssistantText,
+  mapWithLimit,
+  normalizeTools,
+  taskLabel,
+} from "../index.ts";
 
 describe("normalizeTools", () => {
   it("splits and trims a comma-separated string", () => {
-    expect(normalizeTools(" read, bash ,grep")).toEqual(["read", "bash", "grep"]);
+    expect(normalizeTools(" read, bash ,grep")).toEqual([
+      "read",
+      "bash",
+      "grep",
+    ]);
   });
 
   it("keeps string entries of an array and drops the rest", () => {
-    expect(normalizeTools(["read", 42, " bash ", ""])).toEqual(["read", "bash"]);
+    expect(normalizeTools(["read", 42, " bash ", ""])).toEqual([
+      "read",
+      "bash",
+    ]);
   });
 
   it("returns undefined when nothing usable is given", () => {
@@ -34,16 +46,28 @@ describe("taskLabel", () => {
 
 describe("getFinalAssistantText", () => {
   const assistant = (...texts: string[]) =>
-    ({ role: "assistant", content: texts.map((text) => ({ type: "text", text })) }) as any;
+    ({
+      role: "assistant",
+      content: texts.map((text) => ({ type: "text", text })),
+    }) as any;
 
   it("returns the first text part of the last assistant message", () => {
-    const messages = [assistant("old"), { role: "user", content: [] } as any, assistant("new", "extra")];
+    const messages = [
+      assistant("old"),
+      { role: "user", content: [] } as any,
+      assistant("new", "extra"),
+    ];
     expect(getFinalAssistantText(messages)).toBe("new");
   });
 
   it("skips assistant messages without text", () => {
-    const toolOnly = { role: "assistant", content: [{ type: "toolCall" }] } as any;
-    expect(getFinalAssistantText([assistant("answer"), toolOnly])).toBe("answer");
+    const toolOnly = {
+      role: "assistant",
+      content: [{ type: "toolCall" }],
+    } as any;
+    expect(getFinalAssistantText([assistant("answer"), toolOnly])).toBe(
+      "answer",
+    );
   });
 
   it("returns undefined when there is no assistant text", () => {

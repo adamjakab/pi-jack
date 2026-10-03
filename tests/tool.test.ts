@@ -8,6 +8,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Value } from "typebox/value";
 import {
   afterAll,
   afterEach,
@@ -48,6 +49,7 @@ const {
   MAX_FORMAT_RETRIES,
   RESULT_TOOL,
   SCHEMA_FLAG,
+  THINKING_FLAG,
 } = await import("../contract.ts");
 
 interface ChildScript {
@@ -791,5 +793,89 @@ describe("debug_mode", () => {
     expect(result.content[0].text).toContain(
       "[2] bad\n    (no child was started)",
     );
+  });
+});
+
+describe("thinking", () => {
+  /** An assistant turn that ran on `model` at `thinking`, as pi records it on the message. */
+  const turn = (model: string, thinking: string) => ({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      usage,
+      provider: "prov",
+      model,
+      thinkingLevel: thinking,
+    },
+  });
+
+  beforeEach(() => {
+    fs.writeFileSync(
+      path.join(agentDir.current, "agents", "deep.md"),
+      "---\nname: deep\ndescription: Thinks hard\nthinking: high\n---\nThink.\n",
+    );
+  });
+  afterEach(() => fs.rmSync(path.join(agentDir.current, "agents", "deep.md")));
+
+  it("passes no level when neither the call nor the agent sets one", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    await run({ task: "t" });
+    expect(spawnArgs()).not.toContain(`--${THINKING_FLAG}`);
+    expect(spawnArgs()).not.toContain("--thinking");
+  });
+
+  it("passes the call's level through the child's own flag", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    await run({ task: "t", thinking: "xhigh" });
+    expect(argAfter(`--${THINKING_FLAG}`)).toBe("xhigh");
+    expect(spawnArgs()).not.toContain("--thinking");
+  });
+
+  it("uses the agent's level unless the call gives one, per batch item too", async () => {
+    scriptChildren(
+      { events: [answered(okAnswer)] },
+      { events: [answered(okAnswer)] },
+      { events: [answered(okAnswer)] },
+    );
+    await run({ agent: "deep", task: "t" });
+    await run({
+      agent: "deep",
+      thinking: "low",
+      tasks: [{ task: "a" }, { task: "b", thinking: "max" }],
+    });
+    expect([0, 1, 2].map((i) => argAfter(`--${THINKING_FLAG}`, i))).toEqual([
+      "high",
+      "low",
+      "max",
+    ]);
+  });
+
+  it("records the model and level the subagent ran with, and shows them in debug_mode", async () => {
+    scriptChildren({ events: [turn("m", "medium"), answered(okAnswer)] });
+    const result = await run({ debug_mode: true, agent: "deep", task: "t" });
+
+    expect(result.structuredContent.results[0].ranWith).toEqual({
+      model: "prov/m",
+      thinking: "medium",
+    });
+    expect(result.details.setups[0]).toMatchObject({
+      thinking: "high",
+      thinkingFrom: "agent",
+    });
+    const text = result.content[0].text;
+    expect(text).toContain(
+      "thinking: high (from the agent), or the next lower level the model supports",
+    );
+    expect(text).toContain("ran with: prov/m, thinking medium");
+  });
+
+  it("rejects a level that isn't offered", () => {
+    expect(
+      Value.Check(loadTool().parameters, { task: "t", thinking: "minimal" }),
+    ).toBe(false);
+    expect(
+      Value.Check(loadTool().parameters, { task: "t", thinking: "max" }),
+    ).toBe(true);
   });
 });

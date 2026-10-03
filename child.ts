@@ -9,17 +9,41 @@
  *   - `subagent_fail({ reason })`: ends the run when the task cannot be completed.
  * If the agent is about to finish without calling either, a hidden message nudges it, up to MAX_FORMAT_RETRIES times.
  *
+ * With `--subagent-thinking <level>`, it also sets the thinking level: the requested one if the model supports it,
+ * else the next lower one (see pickThinkingLevel). The level each turn ran at shows in its `message_end` event.
+ *
  * The parent reads the outcome from the `tool_execution_end` events of these tools in the child's JSON stream.
  * Does nothing unless `--subagent-schema` is set, so it is inert if loaded anywhere else.
  */
 
-import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { FAIL_TOOL, MAX_FORMAT_RETRIES, RESULT_TOOL, resolveSchema, SCHEMA_FLAG, schemaErrors } from "./contract.ts";
+import {
+  FAIL_TOOL,
+  isThinkingLevel,
+  MAX_FORMAT_RETRIES,
+  pickThinkingLevel,
+  RESULT_TOOL,
+  resolveSchema,
+  SCHEMA_FLAG,
+  schemaErrors,
+  THINKING_FLAG,
+} from "./contract.ts";
 
 export default function subagentChild(pi: ExtensionAPI): void {
   pi.registerFlag(SCHEMA_FLAG, {
-    description: "Internal to subagent_runner: path of the JSON Schema this subagent's answer must conform to",
+    description:
+      "Internal to subagent_runner: path of the JSON Schema this subagent's answer must conform to",
+    type: "string",
+  });
+  pi.registerFlag(THINKING_FLAG, {
+    description:
+      "Internal to subagent_runner: thinking level for this subagent, lowered to what the model supports",
     type: "string",
   });
 
@@ -33,6 +57,20 @@ export default function subagentChild(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", (_event, ctx) => {
+    const thinking = pi.getFlag(THINKING_FLAG);
+    if (isThinkingLevel(thinking)) {
+      pi.setThinkingLevel(
+        ctx.model
+          ? pickThinkingLevel(thinking, getSupportedThinkingLevels(ctx.model))
+          : "off",
+      );
+    } else if (thinking) {
+      report(
+        ctx,
+        `[subagent] Unknown thinking level: ${JSON.stringify(thinking)}`,
+      );
+    }
+
     const schemaPath = pi.getFlag(SCHEMA_FLAG);
     if (typeof schemaPath !== "string" || !schemaPath) return;
 
@@ -40,7 +78,10 @@ export default function subagentChild(pi: ExtensionAPI): void {
     try {
       schema = resolveSchema(schemaPath, ctx.cwd);
     } catch (e) {
-      report(ctx, `[subagent] Could not load the schema: ${e instanceof Error ? e.message : e}`);
+      report(
+        ctx,
+        `[subagent] Could not load the schema: ${e instanceof Error ? e.message : e}`,
+      );
       return;
     }
 
@@ -65,10 +106,16 @@ export default function subagentChild(pi: ExtensionAPI): void {
           const errors = schemaErrors(schema, params);
           if (errors.length === 0) {
             finished = true;
-            return { content: [{ type: "text", text: JSON.stringify(params) }], details: params, terminate: true };
+            return {
+              content: [{ type: "text", text: JSON.stringify(params) }],
+              details: params,
+              terminate: true,
+            };
           }
           const list = errors.map((e) => `- ${e}`).join("\n");
-          throw new Error(`The answer does not match the schema. Fix these and call ${RESULT_TOOL} again:\n${list}`);
+          throw new Error(
+            `The answer does not match the schema. Fix these and call ${RESULT_TOOL} again:\n${list}`,
+          );
         },
       }),
     );
@@ -81,11 +128,18 @@ export default function subagentChild(pi: ExtensionAPI): void {
           `Give up on the task. Call it instead of ${RESULT_TOOL}, as your last action, only when the task ` +
           "cannot be completed; the delegating agent receives the reason as the error.",
         parameters: Type.Object({
-          reason: Type.String({ description: "One or two sentences: what stopped you, and what would unblock it." }),
+          reason: Type.String({
+            description:
+              "One or two sentences: what stopped you, and what would unblock it.",
+          }),
         }),
         async execute(_toolCallId, params) {
           finished = true;
-          return { content: [{ type: "text", text: params.reason }], details: params, terminate: true };
+          return {
+            content: [{ type: "text", text: params.reason }],
+            details: params,
+            terminate: true,
+          };
         },
       }),
     );
@@ -95,7 +149,10 @@ export default function subagentChild(pi: ExtensionAPI): void {
     const missing = [RESULT_TOOL, FAIL_TOOL].filter((t) => !active.includes(t));
     if (missing.length > 0) pi.setActiveTools([...active, ...missing]);
     if (!pi.getActiveTools().includes(RESULT_TOOL)) {
-      report(ctx, `[subagent] The ${RESULT_TOOL} tool is not available; it must not be excluded from the tool list.`);
+      report(
+        ctx,
+        `[subagent] The ${RESULT_TOOL} tool is not available; it must not be excluded from the tool list.`,
+      );
     }
   });
 
@@ -105,7 +162,12 @@ export default function subagentChild(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_before_settle", () => {
-    if (finished || !pi.getActiveTools().includes(RESULT_TOOL) || nudges >= MAX_FORMAT_RETRIES) return;
+    if (
+      finished ||
+      !pi.getActiveTools().includes(RESULT_TOOL) ||
+      nudges >= MAX_FORMAT_RETRIES
+    )
+      return;
     nudges++;
     return {
       continue: true,

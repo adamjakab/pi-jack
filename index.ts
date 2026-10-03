@@ -41,6 +41,9 @@ import {
   RESULT_TOOL,
   resolveSchema,
   SCHEMA_FLAG,
+  THINKING_FLAG,
+  THINKING_LEVELS,
+  type ThinkingLevel,
   schemaErrors,
 } from "./contract.ts";
 
@@ -126,6 +129,13 @@ interface SingleResult {
   /** How many answers the subagent submitted with `subagent_result`, valid or not. */
   attempts: number;
   usage: SubagentUsage;
+  /** The model and thinking level the subagent's last turn actually ran with, from its messages. */
+  ranWith?: RanWith;
+}
+
+interface RanWith {
+  model: string;
+  thinking?: string;
 }
 
 /** How a subagent was set up once defaults and overrides were applied; shown by `debug_mode`. */
@@ -138,6 +148,9 @@ export interface SubagentSetup {
   prompt: Array<"agent" | "call">;
   model?: string;
   modelFrom?: "call" | "agent";
+  /** The requested level; the child lowers it to what the model supports. */
+  thinking?: ThinkingLevel;
+  thinkingFrom?: "call" | "agent";
   /** The `--tools` allowlist given to the child, result tools included; undefined means pi's default tools. */
   tools?: string[];
   toolsFrom?: "call" | "agent";
@@ -166,6 +179,7 @@ export function describeSetup(setup: SubagentSetup): string {
     `agent: ${agent}`,
     `system prompt: ${prompt}`,
     `model: ${setup.model ? `${setup.model}${from(setup.modelFrom)}` : "pi's default"}`,
+    `thinking: ${setup.thinking ? `${setup.thinking}${from(setup.thinkingFrom)}, or the next lower level the model supports` : "pi's default"}`,
     `tools: ${setup.tools ? `${setup.tools.join(", ")}${from(setup.toolsFrom)}` : `pi's default, plus ${RESULT_TOOL}, ${FAIL_TOOL}`}`,
     `schema (${setup.schemaFrom === "default" ? "the default" : `from the ${setup.schemaFrom}`}): ${JSON.stringify(setup.schema)}`,
     `command: ${setup.command.map(shellQuote).join(" ")}`,
@@ -173,6 +187,14 @@ export function describeSetup(setup: SubagentSetup): string {
     .map((line) => `    ${line}`)
     .join("\n");
 }
+
+const thinkingSchema = (description: string) =>
+  Type.Optional(
+    Type.Union(
+      THINKING_LEVELS.map((level) => Type.Literal(level)),
+      { description },
+    ),
+  );
 
 const taskItemSchema = Type.Object({
   task: Type.String({ description: "Task description for this subagent" }),
@@ -193,6 +215,7 @@ const taskItemSchema = Type.Object({
   model: Type.Optional(
     Type.String({ description: "Model override for this task" }),
   ),
+  thinking: thinkingSchema("Thinking level override for this task"),
 });
 
 const outputSchema = Type.Object({
@@ -206,6 +229,12 @@ const outputSchema = Type.Object({
       task: Type.String(),
       error: Type.Optional(Type.String()),
       attempts: Type.Number(),
+      ranWith: Type.Optional(
+        Type.Object({
+          model: Type.String(),
+          thinking: Type.Optional(Type.String()),
+        }),
+      ),
       usage: Type.Object({
         turns: Type.Number(),
         input: Type.Number(),
@@ -233,6 +262,7 @@ async function runSingleSubagent(
   systemPromptInput: string | undefined,
   toolsInput: unknown,
   modelInput: string | undefined,
+  thinkingInput: ThinkingLevel | undefined,
   schemaInput: unknown,
   signal: AbortSignal | undefined,
   onProgress?: (turns: number, activity: string) => void,
@@ -243,6 +273,7 @@ async function runSingleSubagent(
   let tools: string[] | undefined;
   let model: string | undefined;
   let toolsFrom: SubagentSetup["toolsFrom"];
+  let thinking: ThinkingLevel | undefined;
   let resolvedAgentName = agentNameInput ?? "direct";
   // A schema passed on the call wins over the agent's default. Each resolves relative paths from where it was
   // written: the call from the working directory, the frontmatter from the agent file's folder.
@@ -291,6 +322,7 @@ async function runSingleSubagent(
     agentPrompt = agent.systemPrompt;
     tools = agent.tools;
     model = modelInput ?? agent.model;
+    thinking = thinkingInput ?? agent.thinking;
     toolsFrom = tools ? "agent" : undefined;
   } else {
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
@@ -299,6 +331,7 @@ async function runSingleSubagent(
     const callTools = normalizeTools(toolsInput);
     tools = callTools ?? agent?.tools;
     model = modelInput ?? agent?.model;
+    thinking = thinkingInput ?? agent?.thinking;
     toolsFrom = callTools ? "call" : tools ? "agent" : undefined;
   }
   if (agent) resolvedAgentName = agent.name;
@@ -340,6 +373,8 @@ async function runSingleSubagent(
       tmp.schemaPath,
     );
     if (model) args.push("--model", model);
+    // Not `--thinking`: pi would round an unsupported level up, and the child rounds it down instead.
+    if (thinking) args.push(`--${THINKING_FLAG}`, thinking);
     // `--tools` is a complete allowlist, so the result tools must be on it or the child cannot answer.
     if (tools && tools.length > 0)
       args.push(
@@ -362,6 +397,8 @@ async function runSingleSubagent(
         ],
         model,
         modelFrom: modelInput ? "call" : model ? "agent" : undefined,
+        thinking,
+        thinkingFrom: thinkingInput ? "call" : thinking ? "agent" : undefined,
         tools: toolsFlag >= 0 ? args[toolsFlag + 1].split(",") : undefined,
         toolsFrom,
         schema,
@@ -390,6 +427,7 @@ async function runSingleSubagent(
       error,
       attempts: run.submissions,
       usage,
+      ranWith: run.ranWith,
     });
 
     if (run.retriesExhausted) {
@@ -441,6 +479,8 @@ interface ChildRun {
   failReason?: string;
   /** Number of `subagent_result` calls, accepted or not. */
   submissions: number;
+  /** Model and thinking level of the last assistant turn. */
+  ranWith?: RanWith;
   /** What the child said about the last rejected `subagent_result` call. */
   lastRejection?: string;
   /** Set when the child was stopped for using up MAX_FORMAT_RETRIES. */
@@ -472,6 +512,10 @@ async function runChild(
       messages.push(msg);
       if (msg.role === "assistant") {
         usage.turns++;
+        run.ranWith = {
+          model: `${msg.provider}/${msg.model}`,
+          thinking: msg.thinkingLevel,
+        };
         const u = msg.usage;
         if (u) {
           usage.input += u.input ?? 0;
@@ -579,7 +623,7 @@ const subagentRunnerTool = defineTool({
     `No agent (the usual case): omit \`agent\`; the subagent is the default \`${DEFAULT_AGENT}\` agent, ` +
     "optionally customized with `system_prompt` (appended), `tools`, `model`.\n" +
     "Named agent: pass `agent` only with one of the names listed below; never invent one. It keeps its own " +
-    "prompt and tools; `model` still overrides the agent's model.",
+    "prompt and tools; `model` and `thinking` still override the agent's.",
   parameters: Type.Object({
     // Single task (backward compatible)
     task: Type.Optional(
@@ -621,8 +665,8 @@ const subagentRunnerTool = defineTool({
     debug_mode: Type.Optional(
       Type.Boolean({
         description:
-          "Show how each subagent is set up: agent, system prompt, model, tools, schema, and the pi command " +
-          "line. Only set this when the user asks for it.",
+          "Show how each subagent is set up: agent, system prompt, model, thinking, tools, schema, the pi command " +
+          "line, and the model and thinking level it ran with. Only set this when the user asks for it.",
       }),
     ),
     model: Type.Optional(
@@ -631,6 +675,10 @@ const subagentRunnerTool = defineTool({
           "Model for the subagents, as `provider/id` or a pattern (as for `pi --model`); overrides a named " +
           "agent's model. Inherited by batch items.",
       }),
+    ),
+    thinking: thinkingSchema(
+      "Thinking level for the subagents; overrides a named agent's. When the model doesn't support it, the next " +
+        "lower level it supports is used, down to off. Inherited by batch items.",
     ),
 
     // Schema for JSON output
@@ -655,6 +703,7 @@ const subagentRunnerTool = defineTool({
       system_prompt?: string;
       tools?: unknown;
       model?: string;
+      thinking?: ThinkingLevel;
     }> = [];
 
     if (params.tasks && params.tasks.length > 0) {
@@ -665,6 +714,7 @@ const subagentRunnerTool = defineTool({
           system_prompt: item.system_prompt ?? params.system_prompt,
           tools: item.tools ?? params.tools,
           model: item.model ?? params.model,
+          thinking: item.thinking ?? params.thinking,
         });
       }
     } else if (params.task) {
@@ -674,6 +724,7 @@ const subagentRunnerTool = defineTool({
         system_prompt: params.system_prompt,
         tools: params.tools,
         model: params.model,
+        thinking: params.thinking,
       });
     } else {
       return {
@@ -753,6 +804,7 @@ const subagentRunnerTool = defineTool({
           item.system_prompt,
           item.tools,
           item.model,
+          item.thinking,
           params.schema,
           signal,
           (turns, activity) => {
@@ -790,7 +842,10 @@ const subagentRunnerTool = defineTool({
     if (debug) {
       const described = taskItems.map(
         (item, i) =>
-          `[${i + 1}] ${taskLabel(item.task)}\n${setups[i] ? describeSetup(setups[i]) : "    (no child was started)"}`,
+          `[${i + 1}] ${taskLabel(item.task)}\n${setups[i] ? describeSetup(setups[i]) : "    (no child was started)"}` +
+          (results[i].ranWith
+            ? `\n    ran with: ${results[i].ranWith.model}, thinking ${results[i].ranWith.thinking ?? "unknown"}`
+            : ""),
       );
       blocks.unshift(
         `Debug: how each subagent was set up\n${described.join("\n")}`,

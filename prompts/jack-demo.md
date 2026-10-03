@@ -5,15 +5,16 @@ argument-hint: "[path]"
 
 # Subagents Demo
 
-Demonstrate the `subagent_runner` tool by surveying ${1:-the current folder} with multiple tasks ran by independent agents.
+Demonstrate the `subagent_runner` tool by surveying ${1:-the current folder} with multiple tasks carried out by independent agents.
 
 Call `subagent_runner` exactly **once**, with these parameters and nothing else:
 
-- debug_mode: true
+- debug_mode: false
 - run_mode: `parallel`
 - agent: `tester`
 - model: `stealth/space-bunny-alpha`
-- response schema:
+- thinking: off
+- schema:
 
   ```json
   {

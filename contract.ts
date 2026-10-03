@@ -4,7 +4,7 @@
  * A subagent answers by calling the `subagent_result` tool, whose parameters are the run's JSON Schema, so each
  * field's `description` reaches the model right where it fills that field. It gives up by calling `subagent_fail`
  * with a reason instead. Both tools live in child.ts, which the parent loads into every child; this module holds
- * what both sides share: the tool names, the default schema, schema loading, and validation.
+ * what both sides share: the tool names, the default schema, schema loading, validation, and thinking levels.
  */
 
 import * as fs from "node:fs";
@@ -21,6 +21,37 @@ export const FAIL_TOOL = "subagent_fail";
 /** CLI flag, registered by child.ts, that carries the path of the run's schema file to the child. */
 export const SCHEMA_FLAG = "subagent-schema";
 
+/** CLI flag, registered by child.ts, that carries the requested thinking level to the child. */
+export const THINKING_FLAG = "subagent-thinking";
+
+/** Thinking levels a subagent can be asked for, lowest first. */
+export const THINKING_LEVELS = [
+  "off",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+export const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
+  THINKING_LEVELS.includes(value as ThinkingLevel);
+
+/**
+ * The level to run at: `requested` if the model supports it, else the next lower level it supports, else "off".
+ * Pi's own clamping tries higher levels first, which would spend more than was asked for.
+ */
+export function pickThinkingLevel(
+  requested: ThinkingLevel,
+  supported: readonly string[],
+): ThinkingLevel {
+  for (let i = THINKING_LEVELS.indexOf(requested); i > 0; i--) {
+    if (supported.includes(THINKING_LEVELS[i])) return THINKING_LEVELS[i];
+  }
+  return "off";
+}
+
 /**
  * How many invalid answers or nudges a subagent gets after its first try. An invalid `subagent_result` call is
  * thrown back with its errors so the model can fix it; finishing without calling either tool earns a nudge.
@@ -33,11 +64,13 @@ export const DEFAULT_SCHEMA = {
   properties: {
     success: {
       type: "boolean",
-      description: "True only when all requested operations were finished and nothing is left to do.",
+      description:
+        "True only when all requested operations were finished and nothing is left to do.",
     },
     result: {
       type: "string",
-      description: "A concise description of what was found or achieved during this session.",
+      description:
+        "A concise description of what was found or achieved during this session.",
     },
   },
   required: ["success", "result"],
@@ -58,14 +91,18 @@ export function resolveSchema(value: unknown, baseDir: string): TSchema {
       try {
         schema = JSON.parse(text);
       } catch (e) {
-        throw new Error(`the inline schema is not valid JSON (${e instanceof Error ? e.message : e})`);
+        throw new Error(
+          `the inline schema is not valid JSON (${e instanceof Error ? e.message : e})`,
+        );
       }
     } else {
       const filePath = path.resolve(baseDir, text);
       try {
         schema = JSON.parse(fs.readFileSync(filePath, "utf-8"));
       } catch (e) {
-        throw new Error(`could not load the schema file ${filePath} (${e instanceof Error ? e.message : e})`);
+        throw new Error(
+          `could not load the schema file ${filePath} (${e instanceof Error ? e.message : e})`,
+        );
       }
     }
   }
@@ -75,35 +112,57 @@ export function resolveSchema(value: unknown, baseDir: string): TSchema {
   }
   const root = schema as Record<string, unknown>;
   if (root.type !== "object" && root.properties === undefined) {
-    throw new Error('the root of the schema must describe an object, e.g. {"type": "object", "properties": {...}}');
+    throw new Error(
+      'the root of the schema must describe an object, e.g. {"type": "object", "properties": {...}}',
+    );
   }
   const problems = schemaProblems(root);
   if (problems.length > 0) throw new Error(problems.slice(0, 10).join("; "));
   return root as TSchema;
 }
 
-const JSON_TYPES = ["string", "number", "integer", "boolean", "object", "array", "null"];
+const JSON_TYPES = [
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "object",
+  "array",
+  "null",
+];
 
 type Check = (value: unknown, at: string) => string[];
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const must = (ok: boolean, at: string, what: string): string[] => (ok ? [] : [`${at}: must be ${what}`]);
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const must = (ok: boolean, at: string, what: string): string[] =>
+  ok ? [] : [`${at}: must be ${what}`];
 
 const isString: Check = (v, at) => must(typeof v === "string", at, "a string");
-const isNumber: Check = (v, at) => must(typeof v === "number" && Number.isFinite(v), at, "a number");
-const isCount: Check = (v, at) => must(Number.isInteger(v) && (v as number) >= 0, at, "a non-negative integer");
-const isBoolean: Check = (v, at) => must(typeof v === "boolean", at, "true or false");
+const isNumber: Check = (v, at) =>
+  must(typeof v === "number" && Number.isFinite(v), at, "a number");
+const isCount: Check = (v, at) =>
+  must(Number.isInteger(v) && (v as number) >= 0, at, "a non-negative integer");
+const isBoolean: Check = (v, at) =>
+  must(typeof v === "boolean", at, "true or false");
 const isAny: Check = () => [];
 const isSchema: Check = (v, at) => schemaProblems(v, at);
-const isSchemaOrBoolean: Check = (v, at) => (typeof v === "boolean" ? [] : schemaProblems(v, at));
+const isSchemaOrBoolean: Check = (v, at) =>
+  typeof v === "boolean" ? [] : schemaProblems(v, at);
 const isStringList: Check = (v, at) =>
-  must(Array.isArray(v) && v.every((x) => typeof x === "string"), at, "a list of strings");
+  must(
+    Array.isArray(v) && v.every((x) => typeof x === "string"),
+    at,
+    "a list of strings",
+  );
 const isSchemaList: Check = (v, at) =>
   Array.isArray(v) && v.length > 0
     ? v.flatMap((x, i) => schemaProblems(x, `${at}/${i}`))
     : [`${at}: must be a non-empty list of schemas`];
 const isSchemaMap: Check = (v, at) =>
-  isObject(v) ? Object.entries(v).flatMap(([k, x]) => schemaProblems(x, `${at}/${k}`)) : [`${at}: must be an object`];
+  isObject(v)
+    ? Object.entries(v).flatMap(([k, x]) => schemaProblems(x, `${at}/${k}`))
+    : [`${at}: must be an object`];
 
 const isType: Check = (v, at) => {
   const names = Array.isArray(v) ? v : [v];
@@ -111,7 +170,9 @@ const isType: Check = (v, at) => {
   return names.flatMap((name) =>
     typeof name === "string" && JSON_TYPES.includes(name)
       ? []
-      : [`${at}: ${JSON.stringify(name)} is not a JSON Schema type (use ${JSON_TYPES.join(", ")})`],
+      : [
+          `${at}: ${JSON.stringify(name)} is not a JSON Schema type (use ${JSON_TYPES.join(", ")})`,
+        ],
   );
 };
 
@@ -121,7 +182,9 @@ const isPattern: Check = (v, at) => {
     new RegExp(v, "u");
     return [];
   } catch (e) {
-    return [`${at}: is not a valid regular expression (${e instanceof Error ? e.message : e})`];
+    return [
+      `${at}: is not a valid regular expression (${e instanceof Error ? e.message : e})`,
+    ];
   }
 };
 
@@ -143,7 +206,8 @@ const KEYWORDS: Record<string, Check> = {
   writeOnly: isBoolean,
   // Any type
   type: isType,
-  enum: (v, at) => must(Array.isArray(v) && v.length > 0, at, "a non-empty list"),
+  enum: (v, at) =>
+    must(Array.isArray(v) && v.length > 0, at, "a non-empty list"),
   const: isAny,
   allOf: isSchemaList,
   anyOf: isSchemaList,
@@ -162,10 +226,13 @@ const KEYWORDS: Record<string, Check> = {
   minProperties: isCount,
   maxProperties: isCount,
   dependentRequired: (v, at) =>
-    isObject(v) ? Object.entries(v).flatMap(([k, x]) => isStringList(x, `${at}/${k}`)) : [`${at}: must be an object`],
+    isObject(v)
+      ? Object.entries(v).flatMap(([k, x]) => isStringList(x, `${at}/${k}`))
+      : [`${at}: must be an object`],
   dependentSchemas: isSchemaMap,
   // Arrays
-  items: (v, at) => (Array.isArray(v) ? isSchemaList(v, at) : isSchemaOrBoolean(v, at)),
+  items: (v, at) =>
+    Array.isArray(v) ? isSchemaList(v, at) : isSchemaOrBoolean(v, at),
   prefixItems: isSchemaList,
   additionalItems: isSchemaOrBoolean,
   unevaluatedItems: isSchemaOrBoolean,
@@ -187,7 +254,8 @@ const KEYWORDS: Record<string, Check> = {
   maximum: isNumber,
   exclusiveMinimum: isNumber,
   exclusiveMaximum: isNumber,
-  multipleOf: (v, at) => must(typeof v === "number" && v > 0, at, "a positive number"),
+  multipleOf: (v, at) =>
+    must(typeof v === "number" && v > 0, at, "a positive number"),
 };
 
 /**
@@ -202,7 +270,9 @@ export function schemaProblems(schema: unknown, at = ""): string[] {
   return Object.entries(schema).flatMap(([keyword, value]) => {
     const check = KEYWORDS[keyword];
     const here = `${at}/${keyword}`;
-    return check ? check(value, here) : [`${here}: unknown JSON Schema keyword`];
+    return check
+      ? check(value, here)
+      : [`${here}: unknown JSON Schema keyword`];
   });
 }
 
@@ -210,7 +280,10 @@ export function schemaProblems(schema: unknown, at = ""): string[] {
 export function schemaErrors(schema: TSchema, value: unknown): string[] {
   return [...Value.Errors(schema, value)].slice(0, 10).map((e) => {
     // TypeBox reports a property that `additionalProperties: false` forbids as "schema is false".
-    const message = e.message === "schema is false" ? "property not allowed by the schema" : e.message;
+    const message =
+      e.message === "schema is false"
+        ? "property not allowed by the schema"
+        : e.message;
     return `${e.instancePath || "/"}: ${message}`;
   });
 }
