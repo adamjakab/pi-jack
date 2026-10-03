@@ -19,7 +19,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
 const { spawn } = await import("node:child_process");
-const { default: extension, MAX_PARALLEL, DEFAULT_AGENT, DEFAULT_SCHEMA } = await import("../index.ts");
+const { default: extension, MAX_PARALLEL, MAX_FORMAT_RETRIES, DEFAULT_AGENT } = await import("../index.ts");
+const { DEFAULT_SCHEMA } = await import("../contract.ts");
 
 interface ChildScript {
   events?: object[];
@@ -112,20 +113,13 @@ describe("single task", () => {
     expect(result.content[0].text).toBe('✓ direct: say hello\n{"result": "hello"}');
   });
 
-  it("fails when a reply without a schema is not JSON", async () => {
-    scriptChildren({ events: [assistantEnd("hello")] });
-    const result = await run({ task: "say hello" });
-
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent.results[0]).toMatchObject({ success: false, parsed: false, raw: "hello" });
-  });
-
   it("passes model and tools, and never lets the child call subagent_runner", async () => {
-    scriptChildren({ events: [assistantEnd("ok")] });
+    scriptChildren({ events: [assistantEnd('{"result": "ok"}')] });
     await run({ task: "t", model: "m1", tools: ["read", "grep"] });
 
     const args = spawnArgs();
-    expect(args).toEqual(expect.arrayContaining(["--mode", "json", "-p", "--no-session"]));
+    expect(args).toEqual(expect.arrayContaining(["--mode", "json", "-p", "--session-id", "subagent"]));
+    expect(args).not.toContain("--no-session");
     expect(args.slice(args.indexOf("--exclude-tools"), args.indexOf("--exclude-tools") + 2)).toEqual([
       "--exclude-tools",
       "subagent_runner",
@@ -156,13 +150,11 @@ describe("single task", () => {
     });
   });
 
-  it("fails when the schema reply is not valid JSON", async () => {
-    scriptChildren({ events: [assistantEnd("not json")] });
-    const result = await run({ task: "count", schema: '{"count": "number"}' });
-
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent.results[0]).toMatchObject({ success: false, parsed: false });
-    expect(result.structuredContent.results[0].error).toBeTruthy();
+  it("does not retry the contract's error form", async () => {
+    scriptChildren({ events: [assistantEnd('{"subagent_error": "nope"}')] });
+    const result = await run({ task: "t" });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(result.structuredContent.results[0]).toMatchObject({ attempts: 1, error: "nope" });
   });
 
   it("reports stderr when the child exits non-zero", async () => {
@@ -170,14 +162,15 @@ describe("single task", () => {
     const result = await run({ task: "t" });
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent.results[0]).toMatchObject({ success: false, error: "boom" });
+    expect(result.structuredContent.results[0]).toMatchObject({ success: false, error: "boom", attempts: 1 });
     expect(result.content[0].text).toContain("Error: boom");
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it("reports missing output when the child says nothing", async () => {
-    scriptChildren({});
+  it("drops pi's expected new-session warning from stderr", async () => {
+    scriptChildren({ stderr: "Warning: No project session found with id 'subagent'; creating...\nboom", exitCode: 2 });
     const result = await run({ task: "t" });
-    expect(result.structuredContent.results[0]).toMatchObject({ success: false, error: "No output" });
+    expect(result.structuredContent.results[0].error).toBe("boom");
   });
 
   it("rejects a call with neither task nor tasks", async () => {
@@ -236,6 +229,54 @@ describe("named agent", () => {
   });
 });
 
+describe("verification and retry", () => {
+  it("resumes the same session with the errors when a reply fails verification", async () => {
+    scriptChildren({ events: [assistantEnd("not json")] }, { events: [assistantEnd('{"count": 3}')] });
+    const result = await run({ task: "count", schema: '{"count": "number"}' });
+
+    expect(spawn).toHaveBeenCalledTimes(2);
+    const [first, second] = [spawnArgs(0), spawnArgs(1)];
+    const sessionArgs = (args: string[]) => [args[args.indexOf("--session-dir") + 1], args[args.indexOf("--session-id") + 1]];
+    expect(sessionArgs(second)).toEqual(sessionArgs(first));
+    expect(second.slice(0, -1)).toEqual(first.slice(0, -1));
+    expect(second.at(-1)).toMatch(/failed verification[\s\S]*not valid JSON[\s\S]*\{"count": "number"\}/);
+
+    const [r] = result.structuredContent.results;
+    expect(result.isError).toBe(false);
+    expect(r).toMatchObject({ success: true, parsed: true, data: { count: 3 }, attempts: 2 });
+    expect(r.usage.turns).toBe(2);
+    expect(result.content[0].text).toMatch(/^✓ direct: count \(2 attempts\)/);
+  });
+
+  it("retries a reply that is JSON but does not match the schema", async () => {
+    scriptChildren({ events: [assistantEnd('{"count": "three"}')] }, { events: [assistantEnd('{"count": 3}')] });
+    await run({ task: "count", schema: '{"count": "number"}' });
+    expect(spawnArgs(1).at(-1)).toContain("- $.count: expected number, got string");
+  });
+
+  it(`gives up after ${MAX_FORMAT_RETRIES} retries and reports the last errors`, async () => {
+    scriptChildren(...Array.from({ length: MAX_FORMAT_RETRIES + 1 }, () => ({ events: [assistantEnd('{"n": 1}')] })));
+    const result = await run({ task: "t" });
+
+    expect(spawn).toHaveBeenCalledTimes(MAX_FORMAT_RETRIES + 1);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.results[0]).toMatchObject({
+      success: false,
+      parsed: true,
+      data: { n: 1 },
+      attempts: MAX_FORMAT_RETRIES + 1,
+      error: `Reply failed verification after ${MAX_FORMAT_RETRIES + 1} attempts: $.result: missing`,
+    });
+  });
+
+  it("retries an empty reply", async () => {
+    scriptChildren({}, { events: [assistantEnd('{"result": "ok"}')] });
+    const result = await run({ task: "t" });
+    expect(spawnArgs(1).at(-1)).toContain("- the reply is empty");
+    expect(result.structuredContent.results[0]).toMatchObject({ success: true, attempts: 2 });
+  });
+});
+
 describe("default agent", () => {
   const workerFile = path.join(agentDir.current, "agents", `${DEFAULT_AGENT}.md`);
 
@@ -288,7 +329,7 @@ describe("batch", () => {
   it("runs sequentially by default and up to MAX_PARALLEL at once when asked", async () => {
     const tasks = Array.from({ length: MAX_PARALLEL + 2 }, (_, i) => ({ task: `t${i}` }));
     const peakSpawned = async (params: object) => {
-      scriptChildren(...tasks.map(() => ({ events: [assistantEnd("ok")] })));
+      scriptChildren(...tasks.map(() => ({ events: [assistantEnd('{"result": "ok"}')] })));
       let active = 0;
       let peak = 0;
       const original = vi.mocked(spawn).getMockImplementation()!;

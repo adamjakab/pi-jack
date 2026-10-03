@@ -7,14 +7,16 @@
  *   - Single:  { task: "...", agent?: "...", system_prompt?: "...", ... }
  *   - Batch:   { tasks: [{ task: "..." }, ...], run_mode: "sequential" | "parallel" }
  *
- * Child runs: pi --mode json -p --no-session
+ * Child runs: pi --mode json -p, with a private session in a temp dir so a retry can resume it
  * Without `agent`, the child runs as DEFAULT_AGENT (agents/worker.md), or a bare pi agent if that file is missing.
  *
- * Output contract: every child has a schema (the call's `schema`, else the agent's `schema` frontmatter, else
- * DEFAULT_SCHEMA) and must reply with one bare JSON value matching it, or `{"subagent_error": "..."}` if it cannot
- * finish; the extension parses that reply into `data` and turns the error form into a failed result. An agent states
- * the contract in its own instructions around a `{{schema}}` placeholder; for an agent without one, the extension
- * appends outputContract() to its system prompt.
+ * Output contract (contract.ts): every child has a schema (the call's `schema`, else the agent's `schema`
+ * frontmatter, else DEFAULT_SCHEMA) and must reply with one bare JSON value matching it, or
+ * `{"subagent_error": "..."}` if it cannot finish. An agent states the contract in its own instructions around a
+ * `{{schema}}` placeholder; for an agent without one, the extension appends outputContract() to its system prompt.
+ *
+ * Verification: each reply is checked for valid JSON matching the schema. A reply that fails is sent back to the
+ * same subagent (its session is resumed, so it keeps its context) with the errors, up to MAX_FORMAT_RETRIES times.
  */
 
 import { spawn } from "node:child_process";
@@ -25,80 +27,23 @@ import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { discoverAgents } from "./agents.ts";
+import {
+  DEFAULT_SCHEMA,
+  hasSchemaPlaceholder,
+  outputContract,
+  renderSchema,
+  retryPrompt,
+  type Verification,
+  verifyReply,
+} from "./contract.ts";
 
 export const MAX_PARALLEL = 2;
 
+/** How many times a subagent is asked to fix a reply that failed verification, after its first attempt. */
+export const MAX_FORMAT_RETRIES = 2;
+
 /** Agent used when a call omits `agent`. */
 export const DEFAULT_AGENT = "worker";
-
-/** Schema used when neither the call nor the agent gives one. */
-export const DEFAULT_SCHEMA = '{"result": "text"}';
-
-/** The only key of the reply a child sends, under the output contract, when it cannot complete the task. */
-export const ERROR_KEY = "subagent_error";
-
-/** The output contract for an agent whose instructions don't state it, appended to its system prompt. */
-export function outputContract(schema: string): string {
-  return [
-    "## Output contract",
-    "",
-    "Your final message is not read by a person: the subagent runner parses it as JSON and hands the result to the " +
-      "agent that delegated this task.",
-    "",
-    "- Your final message must be exactly one JSON value matching the schema below: no Markdown fences, no prose " +
-      "before or after it.",
-    "- Finish all tool calls first; the JSON is your last message.",
-    "- This contract replaces any other output format in these instructions.",
-    `- If you cannot complete the task, reply with exactly \`{"${ERROR_KEY}": "<one-line reason>"}\` instead.`,
-    "",
-    "Schema:",
-    "",
-    schema,
-  ].join("\n");
-}
-
-const SCHEMA_PLACEHOLDER = /\{\{schema\}\}/g;
-
-/** Whether an agent's instructions place the schema themselves, and so state the output contract on their own. */
-export function hasSchemaPlaceholder(prompt: string): boolean {
-  return prompt.includes("{{schema}}");
-}
-
-/** Replaces each `{{schema}}` in an agent's instructions with the schema. */
-export function renderSchema(prompt: string, schema: string): string {
-  return prompt.replace(SCHEMA_PLACEHOLDER, () => schema);
-}
-
-/** Parses a reply made under the output contract, tolerating Markdown fences or stray prose around the JSON. */
-export function parseJsonReply(raw: string): unknown {
-  const unfenced = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-  try {
-    return JSON.parse(unfenced);
-  } catch (e) {
-    const start = unfenced.indexOf("{");
-    const end = unfenced.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(unfenced.slice(start, end + 1));
-      } catch {
-        // fall through to the original error
-      }
-    }
-    throw e;
-  }
-}
-
-/** Returns the reason when `data` is the contract's error reply, `{ subagent_error: "..." }`. */
-export function contractError(data: unknown): string | undefined {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
-  const keys = Object.keys(data);
-  const reason = (data as Record<string, unknown>)[ERROR_KEY];
-  return keys.length === 1 && typeof reason === "string" ? reason : undefined;
-}
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
@@ -152,6 +97,8 @@ interface SingleResult {
   agent: string;
   task: string;
   error?: string;
+  /** How many times the subagent was run: 1, plus one per verification retry. */
+  attempts: number;
   usage: SubagentUsage;
 }
 
@@ -177,6 +124,7 @@ const outputSchema = Type.Object({
       agent: Type.String(),
       task: Type.String(),
       error: Type.Optional(Type.String()),
+      attempts: Type.Number(),
       usage: Type.Object({
         turns: Type.Number(),
         input: Type.Number(),
@@ -222,6 +170,7 @@ async function runSingleSubagent(
         agent: agentNameInput,
         task: taskText,
         error: errorMsg,
+        attempts: 0,
         usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
       };
     }
@@ -249,116 +198,60 @@ async function runSingleSubagent(
     .map((p) => p!.trim())
     .join("\n\n");
 
-  const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools", "subagent_runner"];
-  if (model) args.push("--model", model);
-  if (tools && tools.length > 0) args.push("--tools", tools.join(","));
-
-  let tmpPromptPath: string | null = null;
   let tmpDir: string | null = null;
 
   try {
     const tmp = await writeTempPrompt(resolvedAgentName, systemPrompt);
-    tmpPromptPath = tmp.filePath;
     tmpDir = tmp.dir;
-    args.push("--append-system-prompt", tmpPromptPath);
 
-    // A short reminder at the end of the task; the contract itself lives in the system prompt.
-    args.push(`${taskText}\n\n---\nReply with only the JSON your instructions describe.`);
-
-    const invocation = getPiInvocation(args);
-    const proc = spawn(invocation.command, invocation.args, {
-      cwd: process.cwd(),
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // The session lives in the run's temp dir, so a retry can resume it and the subagent keeps its context.
+    const args: string[] = ["--mode", "json", "-p", "--session-dir", tmp.dir, "--session-id", "subagent"];
+    args.push("--exclude-tools", "subagent_runner");
+    if (model) args.push("--model", model);
+    if (tools && tools.length > 0) args.push("--tools", tools.join(","));
+    args.push("--append-system-prompt", tmp.filePath);
 
     const usage: SubagentUsage = { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    const messages: Message[] = [];
-    let stderr = "";
-    let buffer = "";
+    // A short reminder at the end of the task; the contract itself lives in the system prompt.
+    let prompt = `${taskText}\n\n---\nReply with only the JSON your instructions describe.`;
+    let attempts = 0;
+    let run: ChildRun;
+    let check: Verification | undefined;
 
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      proc.stdout.on("data", (data) => {
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let event: any;
-          try {
-            event = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          if (event.type === "message_end" && event.message) {
-            const msg = event.message as Message;
-            messages.push(msg);
-            if (msg.role === "assistant") {
-              usage.turns++;
-              const u = msg.usage;
-              if (u) {
-                usage.input += u.input ?? 0;
-                usage.output += u.output ?? 0;
-                usage.cacheRead += u.cacheRead ?? 0;
-                usage.cacheWrite += u.cacheWrite ?? 0;
-                usage.cost += u.cost?.total ?? 0;
-              }
-              onProgress?.(usage.turns, "thinking");
-            }
-          } else if (event.type === "tool_execution_start") {
-            const arg = event.args?.command ?? event.args?.path ?? "";
-            onProgress?.(usage.turns, `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`);
-          }
-        }
-      });
-
-      proc.stderr.on("data", (data) => {
-        stderr += data.toString();
-      });
-
-      proc.on("error", (err) => reject(err));
-      proc.on("close", (code) => resolve(code ?? 1));
-
-      signal?.addEventListener("abort", () => {
-        proc.kill("SIGTERM");
-      });
-    });
-
-    const raw = getFinalAssistantText(messages) ?? "";
-    let parsed = false;
-    let data: any = null;
-    let outputError: string | undefined;
-
-    if (!raw) {
-      outputError = "No output";
-    } else {
-      try {
-        data = parseJsonReply(raw);
-        parsed = true;
-        outputError = contractError(data);
-      } catch (e) {
-        outputError = e instanceof Error ? e.message : String(e);
-      }
+    while (true) {
+      attempts++;
+      const retryLabel = attempts > 1 ? `retry ${attempts - 1}: ` : "";
+      run = await runChild([...args, prompt], usage, signal, (turns, activity) =>
+        onProgress?.(turns, `${retryLabel}${activity}`),
+      );
+      // A crashed or aborted child is not a format problem, so it is not retried.
+      if (run.exitCode !== 0 || signal?.aborted) break;
+      check = verifyReply(run.raw, schema);
+      if (check.errors.length === 0 || attempts > MAX_FORMAT_RETRIES) break;
+      prompt = retryPrompt(check.errors, schema);
     }
 
-    const success = exitCode === 0 && !outputError;
+    let error: string | undefined;
+    if (run.exitCode !== 0) error = run.stderr || `Exit code ${run.exitCode}`;
+    else if (!check) error = "Aborted";
+    else if (check.agentError !== undefined) error = check.agentError;
+    else if (check.errors.length > 0) {
+      error = `Reply failed verification after ${attempts} attempts: ${check.errors.join("; ")}`;
+    }
 
     return {
-      success,
-      parsed,
-      data,
-      raw,
+      success: !error,
+      parsed: check?.parsed ?? false,
+      data: check?.data ?? null,
+      raw: run.raw,
       agent: resolvedAgentName,
       task: taskText,
-      error: !success
-        ? exitCode !== 0
-          ? stderr || `Exit code ${exitCode}`
-          : outputError
-        : undefined,
+      error,
+      attempts,
       usage,
     };
   } finally {
-    if (tmpPromptPath && tmpDir) {
+    if (tmpDir) {
       try {
         await fs.promises.rm(tmpDir, { recursive: true, force: true });
       } catch {
@@ -366,6 +259,83 @@ async function runSingleSubagent(
       }
     }
   }
+}
+
+interface ChildRun {
+  exitCode: number;
+  stderr: string;
+  /** The child's final assistant text, or "" when it gave none. */
+  raw: string;
+}
+
+/** Runs one pi child to completion, adding its turns and token usage to `usage`. */
+async function runChild(
+  args: string[],
+  usage: SubagentUsage,
+  signal: AbortSignal | undefined,
+  onProgress?: (turns: number, activity: string) => void,
+): Promise<ChildRun> {
+  const invocation = getPiInvocation(args);
+  const proc = spawn(invocation.command, invocation.args, {
+    cwd: process.cwd(),
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const messages: Message[] = [];
+  let stderr = "";
+  let buffer = "";
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    proc.stdout.on("data", (data) => {
+      buffer += data.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (event.type === "message_end" && event.message) {
+          const msg = event.message as Message;
+          messages.push(msg);
+          if (msg.role === "assistant") {
+            usage.turns++;
+            const u = msg.usage;
+            if (u) {
+              usage.input += u.input ?? 0;
+              usage.output += u.output ?? 0;
+              usage.cacheRead += u.cacheRead ?? 0;
+              usage.cacheWrite += u.cacheWrite ?? 0;
+              usage.cost += u.cost?.total ?? 0;
+            }
+            onProgress?.(usage.turns, "thinking");
+          }
+        } else if (event.type === "tool_execution_start") {
+          const arg = event.args?.command ?? event.args?.path ?? "";
+          onProgress?.(usage.turns, `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`);
+        }
+      }
+    });
+
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => resolve(code ?? 1));
+
+    signal?.addEventListener("abort", () => {
+      proc.kill("SIGTERM");
+    });
+  });
+
+  // pi warns on the first run that the session id is new; that is expected here, not an error.
+  stderr = stderr.replace(/^Warning: No project session found with id .*\n?/m, "").trim();
+  return { exitCode, stderr, raw: getFinalAssistantText(messages) ?? "" };
 }
 
 export async function mapWithLimit<TIn, TOut>(
@@ -485,6 +455,7 @@ const subagentRunnerTool = defineTool({
               agent: params.agent ?? "direct",
               task: "",
               error: "Either `task` or `tasks` must be provided.",
+              attempts: 0,
               usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
             },
           ],
@@ -538,9 +509,10 @@ const subagentRunnerTool = defineTool({
     // so each child's full reply must be included here, not just a status line.
     const blocks = results.map((r, i) => {
       const prefix = results.length > 1 ? `[${i + 1}/${results.length}] ` : "";
+      const retried = r.attempts > 1 ? ` (${r.attempts} attempts)` : "";
       const header = r.success
-        ? `${prefix}✓ ${r.agent}: ${taskLabel(r.task)}`
-        : `${prefix}✗ ${r.agent}: ${taskLabel(r.task)}\nError: ${r.error ?? "failed"}`;
+        ? `${prefix}✓ ${r.agent}: ${taskLabel(r.task)}${retried}`
+        : `${prefix}✗ ${r.agent}: ${taskLabel(r.task)}${retried}\nError: ${r.error ?? "failed"}`;
       return r.raw ? `${header}\n${r.raw}` : header;
     });
 
