@@ -44,14 +44,15 @@ describe("discoverAgents", () => {
         tools: ["read", "bash"],
         model: "some-model",
         schema: '{"ok": "boolean"}',
+        dir: path.join(agentDir.current, "agents"),
         systemPrompt: expect.stringContaining("You are a probe."),
       },
     ]);
   });
 
-  it("turns an unquoted YAML schema object back into JSON", () => {
-    writeAgent("a.md", "---\nname: a\ndescription: d\nschema: {ok: boolean}\n---\nbody\n");
-    expect(JSON.parse(discoverAgents()[0].schema!)).toEqual({ ok: "boolean" });
+  it("keeps a schema written as YAML as an object", () => {
+    writeAgent("a.md", "---\nname: a\ndescription: d\nschema:\n  type: object\n  required: [ok]\n---\nbody\n");
+    expect(discoverAgents()[0].schema).toEqual({ type: "object", required: ["ok"] });
   });
 
   it("skips files without a name or description, and non-Markdown files", () => {

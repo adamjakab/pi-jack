@@ -11,8 +11,13 @@ export interface AgentConfig {
   description: string;
   tools?: string[];
   model?: string;
-  /** Default JSON output shape, used when the call doesn't pass `schema`. */
-  schema?: string;
+  /**
+   * Default output schema, used when the call doesn't pass one: a JSON Schema written as YAML, inline JSON, or a
+   * path to a `.json` file relative to `dir`. Resolved by contract.ts's resolveSchema().
+   */
+  schema?: unknown;
+  /** Folder of the agent file, which relative paths in its frontmatter resolve against. */
+  dir: string;
   systemPrompt: string;
 }
 
@@ -25,10 +30,9 @@ function parseToolList(value: unknown): string[] | undefined {
   return tools.length > 0 ? tools : undefined;
 }
 
-// YAML may parse an unquoted `schema: {...}` into an object; turn it back into a JSON string.
-function parseSchema(value: unknown): string | undefined {
+function parseSchema(value: unknown): unknown {
   if (typeof value === "string") return value.trim() || undefined;
-  if (value && typeof value === "object") return JSON.stringify(value);
+  if (value && typeof value === "object") return value;
   return undefined;
 }
 
@@ -75,6 +79,7 @@ export function discoverAgents(): AgentConfig[] {
       tools: parseToolList(frontmatter.tools),
       model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
       schema: parseSchema(frontmatter.schema),
+      dir,
       systemPrompt: body,
     });
   }

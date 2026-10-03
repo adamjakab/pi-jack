@@ -1,6 +1,7 @@
 /**
  * Tests the subagent_runner tool's execute() with `spawn` mocked, so no pi subprocess or model is involved.
- * Each fake child replays a scripted list of JSON events, then exits.
+ * Each fake child replays a scripted list of JSON events, then exits. A child answers the way child.ts makes a
+ * real one answer: through `tool_execution_end` events of the subagent_result / subagent_fail tools.
  */
 
 import { EventEmitter } from "node:events";
@@ -19,8 +20,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
 const { spawn } = await import("node:child_process");
-const { default: extension, MAX_PARALLEL, MAX_FORMAT_RETRIES, DEFAULT_AGENT } = await import("../index.ts");
-const { DEFAULT_SCHEMA } = await import("../contract.ts");
+const { default: extension, MAX_PARALLEL, DEFAULT_AGENT } = await import("../index.ts");
+const { DEFAULT_SCHEMA, FAIL_TOOL, MAX_FORMAT_RETRIES, RESULT_TOOL, SCHEMA_FLAG } = await import("../contract.ts");
 
 interface ChildScript {
   events?: object[];
@@ -28,25 +29,38 @@ interface ChildScript {
   exitCode?: number;
 }
 
+const usage = { input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: { total: 0.01 } };
+
 function assistantEnd(text: string) {
-  return {
-    type: "message_end",
-    message: {
-      role: "assistant",
-      content: [{ type: "text", text }],
-      usage: { input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: { total: 0.01 } },
-    },
-  };
+  return { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], usage } };
 }
 
-// System prompt each child was given, in spawn order (the file itself is deleted once the child exits).
+/** An accepted subagent_result call carrying `answer`. */
+function answered(answer: object) {
+  return { type: "tool_execution_end", toolName: RESULT_TOOL, isError: false, result: { details: answer } };
+}
+
+/** A subagent_result call the child rejected with `text`. */
+function rejected(text: string) {
+  return { type: "tool_execution_end", toolName: RESULT_TOOL, isError: true, result: { content: [{ text }] } };
+}
+
+function gaveUp(reason: string) {
+  return { type: "tool_execution_end", toolName: FAIL_TOOL, isError: false, result: { details: { reason } } };
+}
+
+const okAnswer = { success: true, result: "done" };
+
+// What each child was given, in spawn order (the temp files are deleted once the child exits).
 let systemPrompts: (string | undefined)[] = [];
+let schemas: unknown[] = [];
 
 // Queue one script per expected child, in spawn order.
 function scriptChildren(...scripts: ChildScript[]) {
   vi.mocked(spawn).mockImplementation(((_command: string, args: string[]) => {
     const promptFlag = args.indexOf("--append-system-prompt");
     systemPrompts.push(promptFlag >= 0 ? fs.readFileSync(args[promptFlag + 1], "utf-8") : undefined);
+    schemas.push(JSON.parse(fs.readFileSync(args[args.indexOf(`--${SCHEMA_FLAG}`) + 1], "utf-8")));
     const script = scripts.shift() ?? {};
     const proc = Object.assign(new EventEmitter(), {
       stdout: new EventEmitter(),
@@ -66,6 +80,11 @@ function spawnArgs(call = 0): string[] {
   return vi.mocked(spawn).mock.calls[call][1] as string[];
 }
 
+function argAfter(flag: string, call = 0): string | undefined {
+  const args = spawnArgs(call);
+  return args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
+}
+
 function loadTool() {
   let tool: any;
   extension({ registerTool: (t: any) => (tool = t) } as any);
@@ -76,12 +95,14 @@ async function run(params: object) {
   return loadTool().execute("call-1", params, undefined, undefined);
 }
 
+const labelSchema = { type: "object", properties: { label: { type: "string" } }, required: ["label"] };
+
 agentDir.current = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-runner-test-"));
 fs.mkdirSync(path.join(agentDir.current, "agents"));
 fs.writeFileSync(
   path.join(agentDir.current, "agents", "probe.md"),
   "---\nname: probe\ndescription: Test probe\ntools: bash\nmodel: probe-model\n" +
-    "schema: '{\"label\": \"string\"}'\n---\nYou are a probe.\n",
+    `schema: '${JSON.stringify(labelSchema)}'\n---\nYou are a probe.\n`,
 );
 
 afterAll(() => {
@@ -91,6 +112,7 @@ afterAll(() => {
 beforeEach(() => {
   vi.mocked(spawn).mockReset();
   systemPrompts = [];
+  schemas = [];
 });
 
 describe("registration", () => {
@@ -100,61 +122,131 @@ describe("registration", () => {
 });
 
 describe("single task", () => {
-  it("uses the default schema when neither the call nor the agent gives one", async () => {
-    scriptChildren({ events: [assistantEnd('{"result": "hello"}')] });
+  it("uses the default schema and returns the submitted answer as data", async () => {
+    scriptChildren({ events: [assistantEnd("calling the tool"), answered(okAnswer)] });
     const result = await run({ task: "say hello" });
 
     const [r] = result.structuredContent.results;
-    expect(systemPrompts[0]).toMatch(/^## Output contract\n[\s\S]*\n\{"result": "text"\}$/);
-    expect(systemPrompts[0]).toContain(DEFAULT_SCHEMA);
+    expect(schemas[0]).toEqual(DEFAULT_SCHEMA);
     expect(result.isError).toBe(false);
-    expect(r).toMatchObject({ success: true, parsed: true, data: { result: "hello" }, agent: "direct" });
+    expect(r).toMatchObject({ success: true, parsed: true, data: okAnswer, attempts: 1, agent: "direct" });
     expect(r.usage).toEqual({ turns: 1, input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: 0.01 });
-    expect(result.content[0].text).toBe('✓ direct: say hello\n{"result": "hello"}');
+    expect(result.content[0].text).toBe(`✓ direct: say hello\n${JSON.stringify(okAnswer, null, 2)}`);
   });
 
-  it("passes model and tools, and never lets the child call subagent_runner", async () => {
-    scriptChildren({ events: [assistantEnd('{"result": "ok"}')] });
-    await run({ task: "t", model: "m1", tools: ["read", "grep"] });
+  it("loads the child extension with the schema file and never lets the child call subagent_runner", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    await run({ task: "t", model: "m1" });
 
     const args = spawnArgs();
-    expect(args).toEqual(expect.arrayContaining(["--mode", "json", "-p", "--session-id", "subagent"]));
-    expect(args).not.toContain("--no-session");
-    expect(args.slice(args.indexOf("--exclude-tools"), args.indexOf("--exclude-tools") + 2)).toEqual([
-      "--exclude-tools",
-      "subagent_runner",
-    ]);
-    expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual(["--model", "m1"]);
-    expect(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2)).toEqual(["--tools", "read,grep"]);
+    expect(args).toEqual(expect.arrayContaining(["--mode", "json", "-p", "--no-session"]));
+    expect(argAfter("--exclude-tools")).toBe("subagent_runner");
+    expect(argAfter("--extension")).toMatch(/subagent-runner\/child\.ts$/);
+    expect(argAfter("--model")).toBe("m1");
+    expect(args).not.toContain("--tools");
+    expect(args.at(-1)).toBe("t");
   });
 
-  it("puts the output contract in the system prompt and parses a fenced JSON reply", async () => {
-    scriptChildren({ events: [assistantEnd('```json\n{"count": 3}\n```')] });
-    const result = await run({ task: "count", schema: '{"count": "number"}' });
-
-    expect(systemPrompts[0]).toMatch(/^## Output contract\n[\s\S]*\n\{"count": "number"\}$/);
-    expect(spawnArgs().at(-1)).toMatch(/^count\n[\s\S]*only the JSON/);
-    expect(result.structuredContent.results[0]).toMatchObject({ success: true, parsed: true, data: { count: 3 } });
+  it("adds the result tools to an explicit tool list", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    await run({ task: "t", tools: ["read", "grep"] });
+    expect(argAfter("--tools")).toBe(`read,grep,${RESULT_TOOL},${FAIL_TOOL}`);
   });
 
-  it("fails with the agent's reason when it replies with the contract's error form", async () => {
-    scriptChildren({ events: [assistantEnd('{"subagent_error": "repo not found"}')] });
-    const result = await run({ task: "count", schema: '{"count": "number"}' });
+  it("accepts the schema as an object, as inline JSON, or as a path relative to the working directory", async () => {
+    const file = path.join(agentDir.current, "label.json");
+    fs.writeFileSync(file, JSON.stringify(labelSchema));
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(agentDir.current);
+    try {
+      scriptChildren(...[1, 2, 3].map(() => ({ events: [answered({ label: "x" })] })));
+      for (const schema of [labelSchema, JSON.stringify(labelSchema), "label.json"]) {
+        const result = await run({ task: "t", schema });
+        expect(result.structuredContent.results[0]).toMatchObject({ success: true, data: { label: "x" } });
+      }
+      expect(schemas).toEqual([labelSchema, labelSchema, labelSchema]);
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+
+  it("fails without spawning when the schema is unusable", async () => {
+    for (const schema of ["{not json", "missing.json", { type: "array", items: { type: "string" } }]) {
+      const result = await run({ task: "t", schema });
+      expect(result.structuredContent.results[0].error).toMatch(/^Invalid schema: /);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("fails with the reason the subagent gave to subagent_fail", async () => {
+    scriptChildren({ events: [gaveUp("repo not found")] });
+    const result = await run({ task: "t" });
 
     expect(result.isError).toBe(true);
     expect(result.structuredContent.results[0]).toMatchObject({
       success: false,
-      parsed: true,
-      data: { subagent_error: "repo not found" },
+      parsed: false,
+      data: null,
       error: "repo not found",
     });
   });
 
-  it("does not retry the contract's error form", async () => {
-    scriptChildren({ events: [assistantEnd('{"subagent_error": "nope"}')] });
+  it("counts rejected answers and returns the accepted one", async () => {
+    scriptChildren({ events: [rejected("bad 1"), rejected("bad 2"), answered(okAnswer)] });
     const result = await run({ task: "t" });
-    expect(spawn).toHaveBeenCalledTimes(1);
-    expect(result.structuredContent.results[0]).toMatchObject({ attempts: 1, error: "nope" });
+
+    expect(result.structuredContent.results[0]).toMatchObject({ success: true, data: okAnswer, attempts: 3 });
+    expect(result.content[0].text).toMatch(/^✓ direct: t \(3 attempts\)/);
+  });
+
+  it("reports the last rejection when no answer was accepted", async () => {
+    scriptChildren({ events: [rejected("bad 1"), rejected("/success: Expected boolean")] });
+    const result = await run({ task: "t" });
+
+    expect(result.structuredContent.results[0]).toMatchObject({
+      success: false,
+      attempts: 2,
+      error: "No valid answer after 2 attempts. /success: Expected boolean",
+    });
+  });
+
+  it(`stops the child once it has rejected more than MAX_FORMAT_RETRIES answers`, async () => {
+    const rejections = Array.from({ length: MAX_FORMAT_RETRIES + 1 }, (_, i) => rejected(`bad ${i + 1}`));
+    scriptChildren({ events: [...rejections, rejected("never seen")], exitCode: 143 });
+    let killed = false;
+    const original = vi.mocked(spawn).getMockImplementation()!;
+    vi.mocked(spawn).mockImplementation(((...args: any[]) => {
+      const proc = (original as any)(...args);
+      proc.kill = vi.fn(() => (killed = true));
+      return proc;
+    }) as any);
+    const result = await run({ task: "t" });
+
+    expect(killed).toBe(true);
+    expect(result.structuredContent.results[0]).toMatchObject({
+      success: false,
+      error: `No valid answer after ${MAX_FORMAT_RETRIES + 2} attempts. never seen`,
+    });
+  });
+
+  it("fails when the subagent never calls subagent_result", async () => {
+    scriptChildren({ events: [assistantEnd("here is my answer in prose")] });
+    const result = await run({ task: "t" });
+
+    expect(result.structuredContent.results[0]).toMatchObject({
+      success: false,
+      attempts: 0,
+      raw: "here is my answer in prose",
+      error: `The subagent finished without calling ${RESULT_TOOL}.`,
+    });
+  });
+
+  it("validates the answer again, in case the child let a bad one through", async () => {
+    scriptChildren({ events: [answered({ result: "no success flag" })] });
+    const result = await run({ task: "t" });
+
+    const [r] = result.structuredContent.results;
+    expect(r).toMatchObject({ success: false, parsed: true, data: { result: "no success flag" } });
+    expect(r.error).toMatch(/^The answer does not match the schema: \/: .*success/);
   });
 
   it("reports stderr when the child exits non-zero", async () => {
@@ -162,15 +254,8 @@ describe("single task", () => {
     const result = await run({ task: "t" });
 
     expect(result.isError).toBe(true);
-    expect(result.structuredContent.results[0]).toMatchObject({ success: false, error: "boom", attempts: 1 });
+    expect(result.structuredContent.results[0]).toMatchObject({ success: false, error: "boom" });
     expect(result.content[0].text).toContain("Error: boom");
-    expect(spawn).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops pi's expected new-session warning from stderr", async () => {
-    scriptChildren({ stderr: "Warning: No project session found with id 'subagent'; creating...\nboom", exitCode: 2 });
-    const result = await run({ task: "t" });
-    expect(result.structuredContent.results[0].error).toBe("boom");
   });
 
   it("rejects a call with neither task nor tasks", async () => {
@@ -181,43 +266,53 @@ describe("single task", () => {
 });
 
 describe("named agent", () => {
-  it("uses the agent's tools, model, prompt file and default schema", async () => {
-    scriptChildren({ events: [assistantEnd('{"label": "a"}')] });
-    const result = await run({ agent: "probe", task: "label: a", model: "ignored" });
+  it("uses the agent's tools, model, prompt and default schema, ignoring call-level tools and model", async () => {
+    scriptChildren({ events: [answered({ label: "a" })] });
+    const result = await run({ agent: "probe", task: "label: a", model: "ignored", tools: "ignored" });
 
-    const args = spawnArgs();
-    expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual(["--model", "probe-model"]);
-    expect(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2)).toEqual(["--tools", "bash"]);
-    expect(args[args.indexOf("--append-system-prompt") + 1]).toMatch(/prompt-probe\.md$/);
-    expect(systemPrompts[0]).toContain('{"label": "string"}');
-    expect(result.structuredContent.results[0]).toMatchObject({ success: true, parsed: true, agent: "probe" });
+    expect(argAfter("--model")).toBe("probe-model");
+    expect(argAfter("--tools")).toBe(`bash,${RESULT_TOOL},${FAIL_TOOL}`);
+    expect(systemPrompts[0]).toBe("You are a probe.");
+    expect(schemas[0]).toEqual(labelSchema);
+    expect(result.structuredContent.results[0]).toMatchObject({ success: true, data: { label: "a" }, agent: "probe" });
   });
 
-  it("appends the output contract after the agent's own prompt", async () => {
-    scriptChildren({ events: [assistantEnd('{"label": "a"}')] });
-    await run({ agent: "probe", task: "label: a" });
-    expect(systemPrompts[0]).toMatch(/You are a probe\.\n+## Output contract\n[\s\S]*\{"label": "string"\}$/);
+  it("lets the call's schema win over the agent's", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    await run({ agent: "probe", task: "t", schema: DEFAULT_SCHEMA });
+    expect(schemas[0]).toEqual(DEFAULT_SCHEMA);
   });
 
-  it("fills the agent's {{schema}} placeholder instead of appending the generic contract", async () => {
+  it("resolves a frontmatter schema path relative to the agent's folder, and accepts YAML", async () => {
+    const agents = path.join(agentDir.current, "agents");
+    fs.mkdirSync(path.join(agents, "schemas"), { recursive: true });
+    fs.writeFileSync(path.join(agents, "schemas", "label.json"), JSON.stringify(labelSchema));
+    fs.writeFileSync(path.join(agents, "by-path.md"), "---\nname: by-path\ndescription: d\nschema: schemas/label.json\n---\nx\n");
     fs.writeFileSync(
-      path.join(agentDir.current, "agents", "templated.md"),
-      "---\nname: templated\ndescription: d\n---\nReturn {{schema}}.\n",
+      path.join(agents, "by-yaml.md"),
+      "---\nname: by-yaml\ndescription: d\nschema:\n  type: object\n  properties:\n    label:\n      type: string\n" +
+        "      description: The label.\n  required: [label]\n---\nx\n",
     );
-    scriptChildren({ events: [assistantEnd('{"n": 1}')] }, { events: [assistantEnd('{"result": "x"}')] });
-    await run({ agent: "templated", task: "t", schema: '{"n": "number"}' });
-    await run({ agent: "templated", task: "t" });
+    try {
+      scriptChildren({ events: [answered({ label: "a" })] }, { events: [answered({ label: "b" })] });
+      await run({ agent: "by-path", task: "t" });
+      await run({ agent: "by-yaml", task: "t" });
 
-    fs.rmSync(path.join(agentDir.current, "agents", "templated.md"));
-    expect(systemPrompts).toEqual(['Return {"n": "number"}.', `Return ${DEFAULT_SCHEMA}.`]);
+      expect(schemas[0]).toEqual(labelSchema);
+      expect(schemas[1]).toEqual({
+        type: "object",
+        properties: { label: { type: "string", description: "The label." } },
+        required: ["label"],
+      });
+    } finally {
+      for (const f of ["by-path.md", "by-yaml.md", "schemas"]) fs.rmSync(path.join(agents, f), { recursive: true });
+    }
   });
 
-  it("removes the temporary prompt file afterwards", async () => {
-    scriptChildren({ events: [assistantEnd('{"label": "a"}')] });
+  it("removes the temporary files afterwards", async () => {
+    scriptChildren({ events: [answered({ label: "a" })] });
     await run({ agent: "probe", task: "label: a" });
-
-    const promptFile = spawnArgs()[spawnArgs().indexOf("--append-system-prompt") + 1];
-    expect(fs.existsSync(path.dirname(promptFile))).toBe(false);
+    expect(fs.existsSync(path.dirname(argAfter(`--${SCHEMA_FLAG}`)!))).toBe(false);
   });
 
   it("fails cleanly for an unknown agent and lists the available ones", async () => {
@@ -226,54 +321,6 @@ describe("named agent", () => {
     expect(spawn).not.toHaveBeenCalled();
     expect(result.isError).toBe(true);
     expect(result.structuredContent.results[0].error).toMatch(/Unknown agent: "nope"\. Available: "probe"\./);
-  });
-});
-
-describe("verification and retry", () => {
-  it("resumes the same session with the errors when a reply fails verification", async () => {
-    scriptChildren({ events: [assistantEnd("not json")] }, { events: [assistantEnd('{"count": 3}')] });
-    const result = await run({ task: "count", schema: '{"count": "number"}' });
-
-    expect(spawn).toHaveBeenCalledTimes(2);
-    const [first, second] = [spawnArgs(0), spawnArgs(1)];
-    const sessionArgs = (args: string[]) => [args[args.indexOf("--session-dir") + 1], args[args.indexOf("--session-id") + 1]];
-    expect(sessionArgs(second)).toEqual(sessionArgs(first));
-    expect(second.slice(0, -1)).toEqual(first.slice(0, -1));
-    expect(second.at(-1)).toMatch(/failed verification[\s\S]*not valid JSON[\s\S]*\{"count": "number"\}/);
-
-    const [r] = result.structuredContent.results;
-    expect(result.isError).toBe(false);
-    expect(r).toMatchObject({ success: true, parsed: true, data: { count: 3 }, attempts: 2 });
-    expect(r.usage.turns).toBe(2);
-    expect(result.content[0].text).toMatch(/^✓ direct: count \(2 attempts\)/);
-  });
-
-  it("retries a reply that is JSON but does not match the schema", async () => {
-    scriptChildren({ events: [assistantEnd('{"count": "three"}')] }, { events: [assistantEnd('{"count": 3}')] });
-    await run({ task: "count", schema: '{"count": "number"}' });
-    expect(spawnArgs(1).at(-1)).toContain("- $.count: expected number, got string");
-  });
-
-  it(`gives up after ${MAX_FORMAT_RETRIES} retries and reports the last errors`, async () => {
-    scriptChildren(...Array.from({ length: MAX_FORMAT_RETRIES + 1 }, () => ({ events: [assistantEnd('{"n": 1}')] })));
-    const result = await run({ task: "t" });
-
-    expect(spawn).toHaveBeenCalledTimes(MAX_FORMAT_RETRIES + 1);
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent.results[0]).toMatchObject({
-      success: false,
-      parsed: true,
-      data: { n: 1 },
-      attempts: MAX_FORMAT_RETRIES + 1,
-      error: `Reply failed verification after ${MAX_FORMAT_RETRIES + 1} attempts: $.result: missing`,
-    });
-  });
-
-  it("retries an empty reply", async () => {
-    scriptChildren({}, { events: [assistantEnd('{"result": "ok"}')] });
-    const result = await run({ task: "t" });
-    expect(spawnArgs(1).at(-1)).toContain("- the reply is empty");
-    expect(result.structuredContent.results[0]).toMatchObject({ success: true, attempts: 2 });
   });
 });
 
@@ -289,37 +336,36 @@ describe("default agent", () => {
   });
 
   it("runs the default agent when `agent` is omitted", async () => {
-    scriptChildren({ events: [assistantEnd('{"result": "done"}')] });
+    scriptChildren({ events: [answered(okAnswer)] });
     const result = await run({ task: "t" });
 
-    expect(systemPrompts[0]).toContain("You are a worker.");
+    expect(systemPrompts[0]).toBe("You are a worker.");
     expect(result.structuredContent.results[0]).toMatchObject({ success: true, agent: DEFAULT_AGENT });
   });
 
-  it("appends a call-level system_prompt, then the output contract, and passes tools and model", async () => {
-    scriptChildren({ events: [assistantEnd('{"n": 1}')] });
-    await run({ task: "t", system_prompt: "Be brief.", tools: "read", model: "m1", schema: '{"n": "number"}' });
+  it("appends a call-level system_prompt and passes tools and model", async () => {
+    scriptChildren({ events: [answered(okAnswer)] });
+    await run({ task: "t", system_prompt: "Be brief.", tools: "read", model: "m1" });
 
-    expect(systemPrompts[0]).toMatch(/You are a worker\.[\s\S]*Be brief\.[\s\S]*## Output contract/);
-    const args = spawnArgs();
-    expect(args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2)).toEqual(["--tools", "read"]);
-    expect(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2)).toEqual(["--model", "m1"]);
+    expect(systemPrompts[0]).toBe("You are a worker.\n\nBe brief.");
+    expect(argAfter("--tools")).toBe(`read,${RESULT_TOOL},${FAIL_TOOL}`);
+    expect(argAfter("--model")).toBe("m1");
   });
 });
 
 describe("batch", () => {
   it("lets items inherit top-level defaults and keeps results in order", async () => {
-    scriptChildren({ events: [assistantEnd('{"result": "one"}')] }, { events: [assistantEnd('{"result": "two"}')] });
+    scriptChildren({ events: [answered({ ...okAnswer, result: "one" })] }, { events: [answered({ ...okAnswer, result: "two" })] });
     const result = await run({ model: "shared", tasks: [{ task: "a" }, { task: "b", model: "own" }] });
 
     expect(spawnArgs(0)).toContain("shared");
     expect(spawnArgs(1)).toContain("own");
     expect(result.structuredContent.results.map((r: any) => r.data.result)).toEqual(["one", "two"]);
-    expect(result.content[0].text).toMatch(/^\[1\/2\] ✓ direct: a\n.*"one"\}\n\n\[2\/2\] ✓ direct: b\n.*"two"\}$/);
+    expect(result.content[0].text).toMatch(/^\[1\/2\] ✓ direct: a\n[\s\S]*"one"[\s\S]*\n\n\[2\/2\] ✓ direct: b\n[\s\S]*"two"/);
   });
 
   it("marks the whole call as an error when any item fails", async () => {
-    scriptChildren({ events: [assistantEnd('{"result": "ok"}')] }, { exitCode: 1 });
+    scriptChildren({ events: [answered(okAnswer)] }, { exitCode: 1 });
     const result = await run({ tasks: [{ task: "a" }, { task: "b" }] });
 
     expect(result.isError).toBe(true);
@@ -329,7 +375,7 @@ describe("batch", () => {
   it("runs sequentially by default and up to MAX_PARALLEL at once when asked", async () => {
     const tasks = Array.from({ length: MAX_PARALLEL + 2 }, (_, i) => ({ task: `t${i}` }));
     const peakSpawned = async (params: object) => {
-      scriptChildren(...tasks.map(() => ({ events: [assistantEnd('{"result": "ok"}')] })));
+      scriptChildren(...tasks.map(() => ({ events: [answered(okAnswer)] })));
       let active = 0;
       let peak = 0;
       const original = vi.mocked(spawn).getMockImplementation()!;

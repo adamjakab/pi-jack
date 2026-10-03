@@ -7,16 +7,13 @@
  *   - Single:  { task: "...", agent?: "...", system_prompt?: "...", ... }
  *   - Batch:   { tasks: [{ task: "..." }, ...], run_mode: "sequential" | "parallel" }
  *
- * Child runs: pi --mode json -p, with a private session in a temp dir so a retry can resume it
+ * Child runs: pi --mode json -p --no-session --extension child.ts --subagent-schema <file>
  * Without `agent`, the child runs as DEFAULT_AGENT (agents/worker.md), or a bare pi agent if that file is missing.
  *
- * Output contract (contract.ts): every child has a schema (the call's `schema`, else the agent's `schema`
- * frontmatter, else DEFAULT_SCHEMA) and must reply with one bare JSON value matching it, or
- * `{"subagent_error": "..."}` if it cannot finish. An agent states the contract in its own instructions around a
- * `{{schema}}` placeholder; for an agent without one, the extension appends outputContract() to its system prompt.
- *
- * Verification: each reply is checked for valid JSON matching the schema. A reply that fails is sent back to the
- * same subagent (its session is resumed, so it keeps its context) with the errors, up to MAX_FORMAT_RETRIES times.
+ * Output contract (contract.ts, child.ts): every child has a JSON Schema (the call's `schema`, else the agent's
+ * `schema` frontmatter, else DEFAULT_SCHEMA) and answers by calling the `subagent_result` tool, whose parameters
+ * are that schema; it gives up with `subagent_fail`. The child validates each answer and lets the model fix an
+ * invalid one; this side reads the outcome from the child's tool events and validates the answer once more.
  */
 
 import { spawn } from "node:child_process";
@@ -25,22 +22,23 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { fileURLToPath } from "node:url";
+import { Type, type TSchema } from "typebox";
 import { discoverAgents } from "./agents.ts";
 import {
   DEFAULT_SCHEMA,
-  hasSchemaPlaceholder,
-  outputContract,
-  renderSchema,
-  retryPrompt,
-  type Verification,
-  verifyReply,
+  FAIL_TOOL,
+  MAX_FORMAT_RETRIES,
+  RESULT_TOOL,
+  resolveSchema,
+  SCHEMA_FLAG,
+  schemaErrors,
 } from "./contract.ts";
 
 export const MAX_PARALLEL = 2;
 
-/** How many times a subagent is asked to fix a reply that failed verification, after its first attempt. */
-export const MAX_FORMAT_RETRIES = 2;
+/** The child-side extension that gives each subagent its result tools. */
+const CHILD_EXTENSION = fileURLToPath(new URL("./child.ts", import.meta.url));
 
 /** Agent used when a call omits `agent`. */
 export const DEFAULT_AGENT = "worker";
@@ -61,14 +59,23 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
   return { command: "pi", args };
 }
 
-async function writeTempPrompt(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
-  const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-  await withFileMutationQueue(filePath, async () => {
-    await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-  });
-  return { dir: tmpDir, filePath };
+/** Writes the child's schema and, when there is one, its system prompt into a fresh private temp dir. */
+async function writeTempFiles(
+  agentName: string,
+  schema: TSchema,
+  prompt: string,
+): Promise<{ dir: string; schemaPath: string; promptPath?: string }> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
+  const write = (filePath: string, text: string) =>
+    withFileMutationQueue(filePath, () => fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 }));
+
+  const schemaPath = path.join(dir, "schema.json");
+  await write(schemaPath, JSON.stringify(schema));
+  if (!prompt) return { dir, schemaPath };
+
+  const promptPath = path.join(dir, `prompt-${agentName.replace(/[^\w.-]+/g, "_")}.md`);
+  await write(promptPath, prompt);
+  return { dir, schemaPath, promptPath };
 }
 
 export function normalizeTools(value: unknown): string[] | undefined {
@@ -91,13 +98,14 @@ interface SubagentUsage {
 
 interface SingleResult {
   success: boolean;
+  /** Whether `data` holds an answer the subagent submitted. */
   parsed: boolean;
   data: any;
   raw: string;
   agent: string;
   task: string;
   error?: string;
-  /** How many times the subagent was run: 1, plus one per verification retry. */
+  /** How many answers the subagent submitted with `subagent_result`, valid or not. */
   attempts: number;
   usage: SubagentUsage;
 }
@@ -137,13 +145,15 @@ const outputSchema = Type.Object({
   ),
 });
 
+const zeroUsage = (): SubagentUsage => ({ turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+
 async function runSingleSubagent(
   taskText: string,
   agentNameInput: string | undefined,
   systemPromptInput: string | undefined,
   toolsInput: unknown,
   modelInput: string | undefined,
-  schemaInput: string | undefined,
+  schemaInput: unknown,
   signal: AbortSignal | undefined,
   onProgress?: (turns: number, activity: string) => void,
 ): Promise<SingleResult> {
@@ -151,49 +161,57 @@ async function runSingleSubagent(
   let extraPrompt: string | undefined;
   let tools: string[] | undefined;
   let model: string | undefined;
-  let schema = schemaInput;
   let resolvedAgentName = agentNameInput ?? "direct";
+  // A schema passed on the call wins over the agent's default. Each resolves relative paths from where it was
+  // written: the call from the working directory, the frontmatter from the agent file's folder.
+  let schemaSource: unknown = schemaInput;
+  let schemaBaseDir = process.cwd();
+
+  const failure = (error: string): SingleResult => ({
+    success: false,
+    parsed: false,
+    data: null,
+    raw: "",
+    agent: resolvedAgentName,
+    task: taskText,
+    error,
+    attempts: 0,
+    usage: zeroUsage(),
+  });
 
   const agents = discoverAgents();
+  const agent = agents.find((a) => a.name === (agentNameInput ?? DEFAULT_AGENT));
   if (agentNameInput) {
-    const agent = agents.find((a) => a.name === agentNameInput);
     if (!agent) {
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-      const errorMsg =
-        `Unknown agent: "${agentNameInput}". Available: ${available}. ` +
-        "Omit `agent` to run the default subagent.";
-      return {
-        success: false,
-        parsed: false,
-        data: null,
-        raw: "",
-        agent: agentNameInput,
-        task: taskText,
-        error: errorMsg,
-        attempts: 0,
-        usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
-      };
+      return failure(
+        `Unknown agent: "${agentNameInput}". Available: ${available}. Omit \`agent\` to run the default subagent.`,
+      );
     }
     agentPrompt = agent.systemPrompt;
     tools = agent.tools;
     model = agent.model;
-    resolvedAgentName = agent.name;
-    // A schema passed on the call wins over the agent's default.
-    schema = schemaInput ?? agent.schema;
   } else {
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
-    const base = agents.find((a) => a.name === DEFAULT_AGENT);
-    agentPrompt = base?.systemPrompt ?? "";
+    agentPrompt = agent?.systemPrompt ?? "";
     extraPrompt = systemPromptInput;
-    tools = normalizeTools(toolsInput) ?? base?.tools;
-    model = modelInput ?? base?.model;
-    schema = schemaInput ?? base?.schema;
-    resolvedAgentName = base?.name ?? "direct";
+    tools = normalizeTools(toolsInput) ?? agent?.tools;
+    model = modelInput ?? agent?.model;
+  }
+  if (agent) resolvedAgentName = agent.name;
+  if (schemaSource === undefined && agent?.schema !== undefined) {
+    schemaSource = agent.schema;
+    schemaBaseDir = agent.dir;
   }
 
-  schema ??= DEFAULT_SCHEMA;
-  const contract = hasSchemaPlaceholder(agentPrompt) ? undefined : outputContract(schema);
-  const systemPrompt = [renderSchema(agentPrompt, schema), extraPrompt, contract]
+  let schema: TSchema;
+  try {
+    schema = resolveSchema(schemaSource ?? DEFAULT_SCHEMA, schemaBaseDir);
+  } catch (e) {
+    return failure(`Invalid schema: ${e instanceof Error ? e.message : e}`);
+  }
+
+  const systemPrompt = [agentPrompt, extraPrompt]
     .filter((p) => p?.trim())
     .map((p) => p!.trim())
     .join("\n\n");
@@ -201,55 +219,45 @@ async function runSingleSubagent(
   let tmpDir: string | null = null;
 
   try {
-    const tmp = await writeTempPrompt(resolvedAgentName, systemPrompt);
+    const tmp = await writeTempFiles(resolvedAgentName, schema, systemPrompt);
     tmpDir = tmp.dir;
 
-    // The session lives in the run's temp dir, so a retry can resume it and the subagent keeps its context.
-    const args: string[] = ["--mode", "json", "-p", "--session-dir", tmp.dir, "--session-id", "subagent"];
-    args.push("--exclude-tools", "subagent_runner");
+    const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools", "subagent_runner"];
+    args.push("--extension", CHILD_EXTENSION, `--${SCHEMA_FLAG}`, tmp.schemaPath);
     if (model) args.push("--model", model);
-    if (tools && tools.length > 0) args.push("--tools", tools.join(","));
-    args.push("--append-system-prompt", tmp.filePath);
+    // `--tools` is a complete allowlist, so the result tools must be on it or the child cannot answer.
+    if (tools && tools.length > 0) args.push("--tools", [...new Set([...tools, RESULT_TOOL, FAIL_TOOL])].join(","));
+    if (tmp.promptPath) args.push("--append-system-prompt", tmp.promptPath);
+    args.push(taskText);
 
-    const usage: SubagentUsage = { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    // A short reminder at the end of the task; the contract itself lives in the system prompt.
-    let prompt = `${taskText}\n\n---\nReply with only the JSON your instructions describe.`;
-    let attempts = 0;
-    let run: ChildRun;
-    let check: Verification | undefined;
-
-    while (true) {
-      attempts++;
-      const retryLabel = attempts > 1 ? `retry ${attempts - 1}: ` : "";
-      run = await runChild([...args, prompt], usage, signal, (turns, activity) =>
-        onProgress?.(turns, `${retryLabel}${activity}`),
-      );
-      // A crashed or aborted child is not a format problem, so it is not retried.
-      if (run.exitCode !== 0 || signal?.aborted) break;
-      check = verifyReply(run.raw, schema);
-      if (check.errors.length === 0 || attempts > MAX_FORMAT_RETRIES) break;
-      prompt = retryPrompt(check.errors, schema);
-    }
-
-    let error: string | undefined;
-    if (run.exitCode !== 0) error = run.stderr || `Exit code ${run.exitCode}`;
-    else if (!check) error = "Aborted";
-    else if (check.agentError !== undefined) error = check.agentError;
-    else if (check.errors.length > 0) {
-      error = `Reply failed verification after ${attempts} attempts: ${check.errors.join("; ")}`;
-    }
-
-    return {
+    const usage = zeroUsage();
+    const run = await runChild(args, usage, signal, onProgress);
+    const result = (error: string | undefined, data: unknown = null): SingleResult => ({
       success: !error,
-      parsed: check?.parsed ?? false,
-      data: check?.data ?? null,
+      parsed: data !== null,
+      data,
       raw: run.raw,
       agent: resolvedAgentName,
       task: taskText,
       error,
-      attempts,
+      attempts: run.submissions,
       usage,
-    };
+    });
+
+    if (run.retriesExhausted) {
+      return result(`No valid answer after ${run.submissions} attempts. ${run.lastRejection}`);
+    }
+    if (run.exitCode !== 0) return result(run.stderr || `Exit code ${run.exitCode}`, run.answer ?? null);
+    if (run.failReason !== undefined) return result(run.failReason);
+    if (run.answer !== undefined) {
+      // The child validated it already; checking again here guards against a child that skipped or broke that step.
+      const errors = schemaErrors(schema, run.answer);
+      return result(errors.length > 0 ? `The answer does not match the schema: ${errors.join("; ")}` : undefined, run.answer);
+    }
+    if (run.lastRejection) {
+      return result(`No valid answer after ${run.submissions} attempts. ${run.lastRejection}`);
+    }
+    return result(`The subagent finished without calling ${RESULT_TOOL}.`);
   } finally {
     if (tmpDir) {
       try {
@@ -264,8 +272,18 @@ async function runSingleSubagent(
 interface ChildRun {
   exitCode: number;
   stderr: string;
-  /** The child's final assistant text, or "" when it gave none. */
+  /** The child's final assistant text, or "" when it gave none. Informational only; the answer is `answer`. */
   raw: string;
+  /** Arguments of the last accepted `subagent_result` call. */
+  answer?: unknown;
+  /** Reason given to `subagent_fail`, if the child gave up. */
+  failReason?: string;
+  /** Number of `subagent_result` calls, accepted or not. */
+  submissions: number;
+  /** What the child said about the last rejected `subagent_result` call. */
+  lastRejection?: string;
+  /** Set when the child was stopped for using up MAX_FORMAT_RETRIES. */
+  retriesExhausted?: boolean;
 }
 
 /** Runs one pi child to completion, adding its turns and token usage to `usage`. */
@@ -282,47 +300,65 @@ async function runChild(
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  const run: ChildRun = { exitCode: 1, stderr: "", raw: "", submissions: 0 };
   const messages: Message[] = [];
-  let stderr = "";
+  let rejections = 0;
   let buffer = "";
 
-  const exitCode = await new Promise<number>((resolve, reject) => {
+  const handleEvent = (event: any) => {
+    if (event.type === "message_end" && event.message) {
+      const msg = event.message as Message;
+      messages.push(msg);
+      if (msg.role === "assistant") {
+        usage.turns++;
+        const u = msg.usage;
+        if (u) {
+          usage.input += u.input ?? 0;
+          usage.output += u.output ?? 0;
+          usage.cacheRead += u.cacheRead ?? 0;
+          usage.cacheWrite += u.cacheWrite ?? 0;
+          usage.cost += u.cost?.total ?? 0;
+        }
+        onProgress?.(usage.turns, "thinking");
+      }
+    } else if (event.type === "tool_execution_start") {
+      const arg = event.args?.command ?? event.args?.path ?? "";
+      onProgress?.(usage.turns, `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`);
+    } else if (event.type === "tool_execution_end" && event.toolName === RESULT_TOOL) {
+      run.submissions++;
+      if (!event.isError) {
+        run.answer = event.result?.details;
+        return;
+      }
+      // Rejections come from pi's own argument validation as well as child.ts, so the cap is enforced here.
+      run.lastRejection = event.result?.content?.[0]?.text ?? "The answer was rejected.";
+      rejections++;
+      if (rejections > MAX_FORMAT_RETRIES && !run.retriesExhausted) {
+        run.retriesExhausted = true;
+        proc.kill("SIGTERM");
+      }
+    } else if (event.type === "tool_execution_end" && event.toolName === FAIL_TOOL && !event.isError) {
+      run.failReason = String(event.result?.details?.reason ?? "The subagent gave up without a reason.");
+    }
+  };
+
+  run.exitCode = await new Promise<number>((resolve, reject) => {
     proc.stdout.on("data", (data) => {
       buffer += data.toString();
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        let event: any;
         try {
-          event = JSON.parse(line);
+          handleEvent(JSON.parse(line));
         } catch {
-          continue;
-        }
-        if (event.type === "message_end" && event.message) {
-          const msg = event.message as Message;
-          messages.push(msg);
-          if (msg.role === "assistant") {
-            usage.turns++;
-            const u = msg.usage;
-            if (u) {
-              usage.input += u.input ?? 0;
-              usage.output += u.output ?? 0;
-              usage.cacheRead += u.cacheRead ?? 0;
-              usage.cacheWrite += u.cacheWrite ?? 0;
-              usage.cost += u.cost?.total ?? 0;
-            }
-            onProgress?.(usage.turns, "thinking");
-          }
-        } else if (event.type === "tool_execution_start") {
-          const arg = event.args?.command ?? event.args?.path ?? "";
-          onProgress?.(usage.turns, `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`);
+          // not a JSON event line
         }
       }
     });
 
     proc.stderr.on("data", (data) => {
-      stderr += data.toString();
+      run.stderr += data.toString();
     });
 
     proc.on("error", (err) => reject(err));
@@ -333,9 +369,9 @@ async function runChild(
     });
   });
 
-  // pi warns on the first run that the session id is new; that is expected here, not an error.
-  stderr = stderr.replace(/^Warning: No project session found with id .*\n?/m, "").trim();
-  return { exitCode, stderr, raw: getFinalAssistantText(messages) ?? "" };
+  run.stderr = run.stderr.trim();
+  run.raw = getFinalAssistantText(messages) ?? "";
+  return run;
 }
 
 export async function mapWithLimit<TIn, TOut>(
@@ -404,11 +440,13 @@ const subagentRunnerTool = defineTool({
 
     // Schema for JSON output
     schema: Type.Optional(
-      Type.String({
+      Type.Union([Type.String(), Type.Record(Type.String(), Type.Unknown())], {
         description:
-          "Optional expected JSON shape. Each subagent must reply with only a JSON value of this shape, " +
-          "parsed into `data`; a subagent that cannot finish fails with its stated reason. " +
-          `Defaults to the agent's \`schema\` frontmatter, else \`${DEFAULT_SCHEMA}\`.`,
+          "Optional JSON Schema the answer must conform to: an object, inline JSON, or a path to a .json file " +
+          "(relative to the working directory). The root must describe an object; give each property a " +
+          "`description`, which is how the subagent learns what to put there. The subagent's validated answer " +
+          "is returned as `data`. Defaults to the agent's `schema` frontmatter, else " +
+          `\`${JSON.stringify(DEFAULT_SCHEMA)}\`.`,
       }),
     ),
   }),
@@ -513,7 +551,7 @@ const subagentRunnerTool = defineTool({
       const header = r.success
         ? `${prefix}✓ ${r.agent}: ${taskLabel(r.task)}${retried}`
         : `${prefix}✗ ${r.agent}: ${taskLabel(r.task)}${retried}\nError: ${r.error ?? "failed"}`;
-      return r.raw ? `${header}\n${r.raw}` : header;
+      return r.data !== null ? `${header}\n${JSON.stringify(r.data, null, 2)}` : header;
     });
 
     return {
