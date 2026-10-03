@@ -13,7 +13,6 @@ import {
   MAX_FORMAT_RETRIES,
   RESULT_TOOL,
   SCHEMA_FLAG,
-  THINKING_FLAG,
 } from "../contract.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-child-test-"));
@@ -35,26 +34,15 @@ const schema = {
 const schemaFile = path.join(tmp, "schema.json");
 fs.writeFileSync(schemaFile, JSON.stringify(schema));
 
-/** Loads child.ts into a fake pi with the given flag values and model, and starts a session. */
-function startChild(
-  flag: string | undefined,
-  initialTools = ["read"],
-  { thinking, model }: { thinking?: string; model?: object } = {},
-) {
+/** Loads child.ts into a fake pi with the given flag value and starts a session. */
+function startChild(flag: string | undefined, initialTools = ["read"]) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (event: any, ctx: any) => any>();
   let active = [...initialTools];
-  const thinkingLevels: string[] = [];
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const pi = {
     registerFlag: () => {},
-    getFlag: (name: string) =>
-      name === SCHEMA_FLAG
-        ? flag
-        : name === THINKING_FLAG
-          ? thinking
-          : undefined,
-    setThinkingLevel: (level: string) => thinkingLevels.push(level),
+    getFlag: (name: string) => (name === SCHEMA_FLAG ? flag : undefined),
     registerTool: (tool: any) => {
       tools.set(tool.name, tool);
       active.push(tool.name);
@@ -64,14 +52,13 @@ function startChild(
     on: (event: string, handler: any) => handlers.set(event, handler),
   };
   subagentChild(pi as any);
-  const ctx = { cwd: tmp, hasUI: false, model };
+  const ctx = { cwd: tmp, hasUI: false };
   handlers.get("session_start")!({}, ctx);
   handlers.get("before_agent_start")?.({}, ctx);
   const logged = errors.mock.calls.map(([message]) => String(message));
   errors.mockRestore();
   return {
     tools,
-    thinkingLevels,
     logged,
     active: () => active,
     settle: () => handlers.get("agent_before_settle")!({}, ctx),
@@ -151,45 +138,5 @@ describe("child extension", () => {
         /^\[jack\] Could not load the schema: .*missing\.json/,
       ),
     ]);
-  });
-});
-
-describe("thinking level", () => {
-  // Shaped like pi-ai models: a reasoning model supports off..high, plus xhigh/max only when mapped.
-  const upToHigh = { reasoning: true };
-  const withMax = { reasoning: true, thinkingLevelMap: { max: "max" } };
-  const noReasoning = { reasoning: false };
-
-  it("leaves the level alone without the flag", () => {
-    expect(
-      startChild(schemaFile, ["read"], { model: upToHigh }).thinkingLevels,
-    ).toEqual([]);
-  });
-
-  it("sets a supported level as is", () => {
-    expect(
-      startChild(schemaFile, ["read"], { thinking: "medium", model: upToHigh })
-        .thinkingLevels,
-    ).toEqual(["medium"]);
-  });
-
-  it("lowers an unsupported level to the next one the model supports", () => {
-    expect(
-      startChild(schemaFile, ["read"], { thinking: "xhigh", model: withMax })
-        .thinkingLevels,
-    ).toEqual(["high"]);
-    expect(
-      startChild(schemaFile, ["read"], { thinking: "high", model: noReasoning })
-        .thinkingLevels,
-    ).toEqual(["off"]);
-  });
-
-  it("reports an unknown level and leaves the level alone", () => {
-    const child = startChild(schemaFile, ["read"], {
-      thinking: "minimal",
-      model: upToHigh,
-    });
-    expect(child.thinkingLevels).toEqual([]);
-    expect(child.logged).toEqual(['[jack] Unknown thinking level: "minimal"']);
   });
 });

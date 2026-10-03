@@ -9,14 +9,10 @@
  *   - `jack_subagent_fail({ reason })`: ends the run when the task cannot be completed.
  * If the agent is about to finish without calling either, a hidden message nudges it, up to MAX_FORMAT_RETRIES times.
  *
- * With `--jack-thinking <level>`, it also sets the thinking level: the requested one if the model supports it,
- * else the next lower one (see pickThinkingLevel). The level each turn ran at shows in its `message_end` event.
- *
  * The parent reads the outcome from the `tool_execution_end` events of these tools in the child's JSON stream.
  * Does nothing unless `--jack-schema` is set, so it is inert if loaded anywhere else.
  */
 
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
   defineTool,
   type ExtensionAPI,
@@ -25,25 +21,17 @@ import {
 import { Type } from "typebox";
 import {
   FAIL_TOOL,
-  isThinkingLevel,
   MAX_FORMAT_RETRIES,
-  pickThinkingLevel,
   RESULT_TOOL,
   resolveSchema,
   SCHEMA_FLAG,
   schemaErrors,
-  THINKING_FLAG,
 } from "./contract.ts";
 
 export default function subagentChild(pi: ExtensionAPI): void {
   pi.registerFlag(SCHEMA_FLAG, {
     description:
       "Internal to jack: path of the JSON Schema this subagent's answer must conform to",
-    type: "string",
-  });
-  pi.registerFlag(THINKING_FLAG, {
-    description:
-      "Internal to jack: thinking level for this subagent, lowered to what the model supports",
     type: "string",
   });
 
@@ -57,17 +45,6 @@ export default function subagentChild(pi: ExtensionAPI): void {
   };
 
   pi.on("session_start", (_event, ctx) => {
-    const thinking = pi.getFlag(THINKING_FLAG);
-    if (isThinkingLevel(thinking)) {
-      pi.setThinkingLevel(
-        ctx.model
-          ? pickThinkingLevel(thinking, getSupportedThinkingLevels(ctx.model))
-          : "off",
-      );
-    } else if (thinking) {
-      report(ctx, `[jack] Unknown thinking level: ${JSON.stringify(thinking)}`);
-    }
-
     const schemaPath = pi.getFlag(SCHEMA_FLAG);
     if (typeof schemaPath !== "string" || !schemaPath) return;
 

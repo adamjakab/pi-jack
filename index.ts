@@ -41,7 +41,6 @@ import {
   RESULT_TOOL,
   resolveSchema,
   SCHEMA_FLAG,
-  THINKING_FLAG,
   THINKING_LEVELS,
   type ThinkingLevel,
   schemaErrors,
@@ -148,7 +147,7 @@ export interface SubagentSetup {
   prompt: Array<"agent" | "call">;
   model?: string;
   modelFrom?: "call" | "agent";
-  /** The requested level; the child lowers it to what the model supports. */
+  /** The requested level; pi moves an unsupported one to the nearest level the model supports. */
   thinking?: ThinkingLevel;
   thinkingFrom?: "call" | "agent";
   /** The `--tools` allowlist given to the child, result tools included; undefined means pi's default tools. */
@@ -179,7 +178,7 @@ export function describeSetup(setup: SubagentSetup): string {
     `agent: ${agent}`,
     `system prompt: ${prompt}`,
     `model: ${setup.model ? `${setup.model}${from(setup.modelFrom)}` : "pi's default"}`,
-    `thinking: ${setup.thinking ? `${setup.thinking}${from(setup.thinkingFrom)}, or the next lower level the model supports` : "pi's default"}`,
+    `thinking: ${setup.thinking ? `${setup.thinking}${from(setup.thinkingFrom)}, or the nearest level the model supports` : "pi's default"}`,
     `tools: ${setup.tools ? `${setup.tools.join(", ")}${from(setup.toolsFrom)}` : `pi's default, plus ${RESULT_TOOL}, ${FAIL_TOOL}`}`,
     `schema (${setup.schemaFrom === "default" ? "the default" : `from the ${setup.schemaFrom}`}): ${JSON.stringify(setup.schema)}`,
     `command: ${setup.command.map(shellQuote).join(" ")}`,
@@ -373,8 +372,7 @@ async function runSingleSubagent(
       tmp.schemaPath,
     );
     if (model) args.push("--model", model);
-    // Not `--thinking`: pi would round an unsupported level up, and the child rounds it down instead.
-    if (thinking) args.push(`--${THINKING_FLAG}`, thinking);
+    if (thinking) args.push("--thinking", thinking);
     // `--tools` is a complete allowlist, so the result tools must be on it or the child cannot answer.
     if (tools && tools.length > 0)
       args.push(
@@ -677,8 +675,8 @@ const jackTool = defineTool({
       }),
     ),
     thinking: thinkingSchema(
-      "Thinking level for the subagents; overrides a named agent's. When the model doesn't support it, the next " +
-        "lower level it supports is used, down to off. Inherited by batch items.",
+      "Thinking level for the subagents; overrides a named agent's. When the model doesn't support it, the nearest " +
+        "higher level it supports is used, else the nearest lower one. Inherited by batch items.",
     ),
 
     // Schema for JSON output

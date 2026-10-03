@@ -26,7 +26,7 @@ export interface AgentConfig {
   description: string;
   tools?: string[];
   model?: string;
-  /** Default thinking level; lowered to what the model supports. */
+  /** Default thinking level; pi moves an unsupported one to the nearest level the model supports. */
   thinking?: ThinkingLevel;
   /**
    * Default output schema, used when the call doesn't pass one: a JSON Schema written as YAML, inline JSON, or a

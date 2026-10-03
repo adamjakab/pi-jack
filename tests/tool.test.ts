@@ -49,7 +49,6 @@ const {
   MAX_FORMAT_RETRIES,
   RESULT_TOOL,
   SCHEMA_FLAG,
-  THINKING_FLAG,
 } = await import("../contract.ts");
 
 interface ChildScript {
@@ -819,15 +818,13 @@ describe("thinking", () => {
   it("passes no level when neither the call nor the agent sets one", async () => {
     scriptChildren({ events: [answered(okAnswer)] });
     await run({ task: "t" });
-    expect(spawnArgs()).not.toContain(`--${THINKING_FLAG}`);
     expect(spawnArgs()).not.toContain("--thinking");
   });
 
-  it("passes the call's level through the child's own flag", async () => {
+  it("passes the call's level to pi's --thinking", async () => {
     scriptChildren({ events: [answered(okAnswer)] });
     await run({ task: "t", thinking: "xhigh" });
-    expect(argAfter(`--${THINKING_FLAG}`)).toBe("xhigh");
-    expect(spawnArgs()).not.toContain("--thinking");
+    expect(argAfter("--thinking")).toBe("xhigh");
   });
 
   it("uses the agent's level unless the call gives one, per batch item too", async () => {
@@ -842,7 +839,7 @@ describe("thinking", () => {
       thinking: "low",
       tasks: [{ task: "a" }, { task: "b", thinking: "max" }],
     });
-    expect([0, 1, 2].map((i) => argAfter(`--${THINKING_FLAG}`, i))).toEqual([
+    expect([0, 1, 2].map((i) => argAfter("--thinking", i))).toEqual([
       "high",
       "low",
       "max",
@@ -863,7 +860,7 @@ describe("thinking", () => {
     });
     const text = result.content[0].text;
     expect(text).toContain(
-      "thinking: high (from the agent), or the next lower level the model supports",
+      "thinking: high (from the agent), or the nearest level the model supports",
     );
     expect(text).toContain("ran with: prov/m, thinking medium");
   });

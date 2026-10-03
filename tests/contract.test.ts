@@ -5,7 +5,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_SCHEMA,
   isThinkingLevel,
-  pickThinkingLevel,
   resolveSchema,
   schemaErrors,
   schemaProblems,
@@ -264,26 +263,7 @@ describe("DEFAULT_SCHEMA", () => {
   });
 });
 
-describe("pickThinkingLevel", () => {
-  const upToHigh = ["off", "minimal", "low", "medium", "high"];
-
-  it("keeps a supported level", () => {
-    expect(pickThinkingLevel("medium", upToHigh)).toBe("medium");
-    expect(pickThinkingLevel("max", [...upToHigh, "xhigh", "max"])).toBe("max");
-  });
-
-  it("falls back to the next lower supported level, never a higher one", () => {
-    expect(pickThinkingLevel("max", upToHigh)).toBe("high");
-    expect(pickThinkingLevel("xhigh", [...upToHigh, "max"])).toBe("high");
-    expect(pickThinkingLevel("high", ["off", "medium", "max"])).toBe("medium");
-  });
-
-  it("ends at off, skipping minimal, which is not one of the levels offered", () => {
-    expect(pickThinkingLevel("low", ["off", "minimal", "medium"])).toBe("off");
-    expect(pickThinkingLevel("max", ["off"])).toBe("off");
-    expect(pickThinkingLevel("off", upToHigh)).toBe("off");
-  });
-
+describe("THINKING_LEVELS", () => {
   it("knows the offered levels", () => {
     expect(
       ["off", "low", "medium", "high", "xhigh", "max"].every(isThinkingLevel),

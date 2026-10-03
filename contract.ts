@@ -21,10 +21,10 @@ export const FAIL_TOOL = "jack_subagent_fail";
 /** CLI flag, registered by child.ts, that carries the path of the run's schema file to the child. */
 export const SCHEMA_FLAG = "jack-schema";
 
-/** CLI flag, registered by child.ts, that carries the requested thinking level to the child. */
-export const THINKING_FLAG = "jack-thinking";
-
-/** Thinking levels a subagent can be asked for, lowest first. */
+/**
+ * Thinking levels a subagent can be asked for, lowest first. They are passed to the child as `--thinking`; for a
+ * level the model doesn't support, pi uses the nearest higher level it does, else the nearest lower one.
+ */
 export const THINKING_LEVELS = [
   "off",
   "low",
@@ -37,21 +37,6 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
   THINKING_LEVELS.includes(value as ThinkingLevel);
-
-/**
- * The level to run at: `requested` if the model supports it, else the next lower level it supports, else "off".
- * Pi's own clamping tries higher levels first, which would spend more than was asked for. A model that can't turn
- * thinking off still gets "off" here, and pi then raises it to the model's lowest level.
- */
-export function pickThinkingLevel(
-  requested: ThinkingLevel,
-  supported: readonly string[],
-): ThinkingLevel {
-  for (let i = THINKING_LEVELS.indexOf(requested); i > 0; i--) {
-    if (supported.includes(THINKING_LEVELS[i])) return THINKING_LEVELS[i];
-  }
-  return "off";
-}
 
 /**
  * How many invalid answers or nudges a subagent gets after its first try. An invalid `jack_subagent_result` call is
