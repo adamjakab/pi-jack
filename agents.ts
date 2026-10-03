@@ -11,6 +11,8 @@ export interface AgentConfig {
   description: string;
   tools?: string[];
   model?: string;
+  /** Default JSON output shape, used when the call doesn't pass `schema`. */
+  schema?: string;
   systemPrompt: string;
 }
 
@@ -23,8 +25,15 @@ function parseToolList(value: unknown): string[] | undefined {
   return tools.length > 0 ? tools : undefined;
 }
 
+// YAML may parse an unquoted `schema: {...}` into an object; turn it back into a JSON string.
+function parseSchema(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return undefined;
+}
+
 export function discoverAgents(): AgentConfig[] {
-  const dir = getAgentDir();
+  const dir = path.join(getAgentDir(), "agents");
   const agents: AgentConfig[] = [];
 
   if (!fs.existsSync(dir)) return agents;
@@ -53,6 +62,7 @@ export function discoverAgents(): AgentConfig[] {
       description?: unknown;
       tools?: unknown;
       model?: unknown;
+      schema?: unknown;
     }>(content);
 
     if (typeof frontmatter.name !== "string" || typeof frontmatter.description !== "string") {
@@ -64,6 +74,7 @@ export function discoverAgents(): AgentConfig[] {
       description: frontmatter.description,
       tools: parseToolList(frontmatter.tools),
       model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+      schema: parseSchema(frontmatter.schema),
       systemPrompt: body,
     });
   }

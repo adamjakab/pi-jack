@@ -13,5 +13,5 @@
       "*": ["/home/jackisback/.pi/agent/install/releases/1.0.0/node_modules/*"]
     }
   },
-  "include": ["*.ts"]
+  "include": ["*.ts", "tests/*.ts"]
 }

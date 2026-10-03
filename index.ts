@@ -79,7 +79,9 @@ interface SingleResult {
 
 const taskItemSchema = Type.Object({
   task: Type.String({ description: "Task description for this subagent" }),
-  agent: Type.Optional(Type.String({ description: "Agent name (defaults to top-level agent)" })),
+  agent: Type.Optional(
+    Type.String({ description: "Optional. Name of an available agent; defaults to the top-level `agent`, if any" }),
+  ),
   system_prompt: Type.Optional(Type.String({ description: "System prompt override for this task" })),
   tools: Type.Optional(
     Type.Union([Type.String(), Type.Array(Type.String())], { description: "Tools for this task" }),
@@ -115,12 +117,14 @@ async function runSingleSubagent(
   systemPromptInput: string | undefined,
   toolsInput: unknown,
   modelInput: string | undefined,
-  schemaHint: string | undefined,
+  schemaInput: string | undefined,
   signal: AbortSignal | undefined,
+  onProgress?: (turns: number, activity: string) => void,
 ): Promise<SingleResult> {
   let systemPrompt: string = "";
   let tools: string[] | undefined;
   let model: string | undefined;
+  let schemaHint = schemaInput;
   let resolvedAgentName = agentNameInput ?? "direct";
 
   if (agentNameInput) {
@@ -128,7 +132,9 @@ async function runSingleSubagent(
     const agent = agents.find((a) => a.name === agentNameInput);
     if (!agent) {
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-      const errorMsg = `Unknown agent: "${agentNameInput}". Available: ${available}.`;
+      const errorMsg =
+        `Unknown agent: "${agentNameInput}". Available: ${available}. ` +
+        "Omit `agent` to run a general-purpose subagent.";
       return {
         success: false,
         parsed: false,
@@ -144,6 +150,8 @@ async function runSingleSubagent(
     tools = agent.tools;
     model = agent.model;
     resolvedAgentName = agent.name;
+    // A schema passed on the call wins over the agent's default.
+    schemaHint = schemaInput ?? agent.schema;
   } else {
     systemPrompt = systemPromptInput ?? "";
     tools = normalizeTools(toolsInput);
@@ -214,7 +222,11 @@ async function runSingleSubagent(
                 usage.cacheWrite += u.cacheWrite ?? 0;
                 usage.cost += u.cost?.total ?? 0;
               }
+              onProgress?.(usage.turns, "thinking");
             }
+          } else if (event.type === "tool_execution_start") {
+            const arg = event.args?.command ?? event.args?.path ?? "";
+            onProgress?.(usage.turns, `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`);
           }
         }
       });
@@ -234,19 +246,24 @@ async function runSingleSubagent(
     const raw = getFinalAssistantText(messages) ?? "";
     let parsed = false;
     let data: any = null;
-    let parseError: string | undefined;
+    let outputError: string | undefined;
 
-    if (raw) {
+    if (!raw) {
+      outputError = "No output";
+    } else if (schemaHint) {
       const cleaned = raw.replace(/^```json\s*/, "").replace(/\s*```$/, "").trim();
       try {
         data = JSON.parse(cleaned);
         parsed = true;
       } catch (e) {
-        parseError = e instanceof Error ? e.message : String(e);
+        outputError = e instanceof Error ? e.message : String(e);
       }
+    } else {
+      // No schema: keep the model's free-form reply and wrap it ourselves so data is always JSON.
+      data = { response: raw };
     }
 
-    const success = exitCode === 0 && !parseError;
+    const success = exitCode === 0 && !outputError;
 
     return {
       success,
@@ -255,7 +272,11 @@ async function runSingleSubagent(
       raw,
       agent: resolvedAgentName,
       task: taskText,
-      error: !success ? (parseError || stderr || `Exit code ${exitCode}`) : undefined,
+      error: !success
+        ? exitCode !== 0
+          ? stderr || `Exit code ${exitCode}`
+          : outputError
+        : undefined,
       usage,
     };
   } finally {
@@ -296,8 +317,9 @@ const subagentRunnerTool = defineTool({
     "Delegate tasks to isolated pi subprocesses with structured JSON output.\n" +
     "Single task: pass `task`.\n" +
     "Batch: pass `tasks` array with `run_mode: 'sequential' (default) or 'parallel'`.\n" +
-    "Named agent: pass `agent` to load from ~/.pi/agent/agents/*.md.\n" +
-    "Direct mode: omit `agent` and set `system_prompt`, `tools`, `model`.",
+    "No agent (the usual case): omit `agent`; the subagent is a general-purpose pi agent, " +
+    "optionally customized with `system_prompt`, `tools`, `model`.\n" +
+    "Named agent: pass `agent` only with one of the names listed below; never invent one.",
   parameters: Type.Object({
     // Single task (backward compatible)
     task: Type.Optional(Type.String({ description: "Single task description" })),
@@ -318,7 +340,9 @@ const subagentRunnerTool = defineTool({
 
     // Global defaults (used when tasks[] items don't specify their own)
     agent: Type.Optional(
-      Type.String({ description: 'Default agent name from ~/.pi/agent/agents/*.md. Inherited by batch items.' }),
+      Type.String({
+        description: "Optional. Name of an available agent (see tool description); omit otherwise. Inherited by batch items.",
+      }),
     ),
     system_prompt: Type.Optional(
       Type.String({ description: "Default system prompt. Inherited by batch items." }),
@@ -335,13 +359,15 @@ const subagentRunnerTool = defineTool({
       Type.String({
         description:
           "Optional expected JSON shape. When provided, each subagent is instructed " +
-          "to return ONLY valid JSON with no markdown or prose.",
+          "to return ONLY valid JSON with no markdown or prose. " +
+          "Defaults to the named agent's `schema` frontmatter, if any. " +
+          "Without a schema, the free-form reply is returned as `data: { response: <text> }`.",
       }),
     ),
   }),
   outputSchema,
 
-  async execute(_toolCallId, params, signal) {
+  async execute(_toolCallId, params, signal, onUpdate) {
     // Build normalized task list
     const taskItems: Array<{
       task: string;
@@ -394,27 +420,66 @@ const subagentRunnerTool = defineTool({
     const runMode = params.run_mode ?? "sequential";
     const concurrency = runMode === "parallel" ? MAX_PARALLEL : 1;
 
-    const results = await mapWithLimit(taskItems, concurrency, (item) =>
-      runSingleSubagent(item.task, item.agent, item.system_prompt, item.tools, item.model, params.schema, signal),
-    );
+    // Live per-task status, streamed to the TUI so long batches don't look frozen.
+    const status = taskItems.map(() => "queued");
+    const startedAt = Date.now();
+    const reportProgress = () => {
+      const done = status.filter((s) => s.startsWith("✓") || s.startsWith("✗")).length;
+      const secs = Math.round((Date.now() - startedAt) / 1000);
+      const lines = taskItems.map((item, i) => `[${i + 1}] ${taskLabel(item.task)} — ${status[i]}`);
+      onUpdate?.({
+        content: [{ type: "text", text: `${done}/${taskItems.length} done (${secs}s)\n${lines.join("\n")}` }],
+        details: undefined as any,
+      });
+    };
+    reportProgress();
+
+    const results = await mapWithLimit(taskItems, concurrency, async (item, i) => {
+      status[i] = "starting";
+      reportProgress();
+      const result = await runSingleSubagent(
+        item.task,
+        item.agent,
+        item.system_prompt,
+        item.tools,
+        item.model,
+        params.schema,
+        signal,
+        (turns, activity) => {
+          status[i] = `turn ${turns + 1}: ${activity}`;
+          reportProgress();
+        },
+      );
+      status[i] = `${result.success ? "✓" : "✗"} ${result.usage.turns} turns`;
+      reportProgress();
+      return result;
+    });
 
     const anyFailed = results.some((r) => !r.success);
 
-    const lines = results.map((r, i) => {
+    // The model only receives `content` (structuredContent is for programmatic callers),
+    // so each child's full reply must be included here, not just a status line.
+    const blocks = results.map((r, i) => {
       const prefix = results.length > 1 ? `[${i + 1}/${results.length}] ` : "";
-      return r.success
-        ? `${prefix}✓ ${r.agent}: ${r.task.slice(0, 60)}${r.task.length > 60 ? "..." : ""}`
-        : `${prefix}✗ ${r.agent}: ${r.error ?? "failed"}`;
+      const header = r.success
+        ? `${prefix}✓ ${r.agent}: ${taskLabel(r.task)}`
+        : `${prefix}✗ ${r.agent}: ${taskLabel(r.task)}\nError: ${r.error ?? "failed"}`;
+      return r.raw ? `${header}\n${r.raw}` : header;
     });
 
     return {
-      content: [{ type: "text", text: lines.join("\n") }],
+      content: [{ type: "text", text: blocks.join("\n\n") }],
       structuredContent: { results } as any,
       details: { results, runMode, count: results.length } as any,
       isError: anyFailed,
     };
   },
 });
+
+function taskLabel(task: string): string {
+  const firstLine = task.split("\n")[0];
+  return `${firstLine.slice(0, 60)}${firstLine.length > 60 || firstLine !== task ? "..." : ""}`;
+}
 
 function getFinalAssistantText(messages: Message[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -429,5 +494,11 @@ function getFinalAssistantText(messages: Message[]): string | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.registerTool(subagentRunnerTool);
+  // List the agents known at load time so the model never has to guess a name.
+  const agents = discoverAgents();
+  const available =
+    agents.length > 0
+      ? `Available agents:\n${agents.map((a) => `- ${a.name}: ${a.description}`).join("\n")}`
+      : "Available agents: none (always omit `agent`).";
+  pi.registerTool({ ...subagentRunnerTool, description: `${subagentRunnerTool.description}\n${available}` });
 }
