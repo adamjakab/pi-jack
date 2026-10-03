@@ -1,5 +1,17 @@
+import * as fs from "node:fs";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { getFinalAssistantText, mapWithLimit, normalizeTools, taskLabel } from "../index.ts";
+import {
+  contractError,
+  ERROR_KEY,
+  hasSchemaPlaceholder,
+  renderSchema,
+  getFinalAssistantText,
+  mapWithLimit,
+  normalizeTools,
+  parseJsonReply,
+  taskLabel,
+} from "../index.ts";
 
 describe("normalizeTools", () => {
   it("splits and trims a comma-separated string", () => {
@@ -85,5 +97,81 @@ describe("mapWithLimit", () => {
 
   it("returns an empty array for no items", async () => {
     expect(await mapWithLimit([], 4, async () => 1)).toEqual([]);
+  });
+});
+
+describe("parseJsonReply", () => {
+  it("parses bare and fenced JSON", () => {
+    expect(parseJsonReply(' {"a": 1} ')).toEqual({ a: 1 });
+    expect(parseJsonReply('```json\n{"a": 1}\n```')).toEqual({ a: 1 });
+    expect(parseJsonReply("```\n[1, 2]\n```")).toEqual([1, 2]);
+  });
+
+  it("recovers an object surrounded by stray prose", () => {
+    expect(parseJsonReply('Here you go:\n{"a": {"b": 2}}\nDone.')).toEqual({ a: { b: 2 } });
+  });
+
+  it("throws when there is no JSON", () => {
+    expect(() => parseJsonReply("not json")).toThrow();
+  });
+});
+
+describe("contractError", () => {
+  it("returns the reason of a lone subagent_error key", () => {
+    expect(contractError({ subagent_error: "blocked" })).toBe("blocked");
+  });
+
+  it("ignores ordinary replies, including ones that merely contain the key", () => {
+    expect(contractError({ count: 3 })).toBeUndefined();
+    expect(contractError({ subagent_error: "x", count: 3 })).toBeUndefined();
+    expect(contractError({ subagent_error: 42 })).toBeUndefined();
+    expect(contractError([{ subagent_error: "x" }])).toBeUndefined();
+    expect(contractError(null)).toBeUndefined();
+  });
+});
+
+describe("renderSchema", () => {
+  const prompt = "Intro\n\n{{#schema}}\nReturn JSON:\n{{schema}}\n{{/schema}}\n\n{{^schema}}\nWrite a report.\n{{/schema}}\n";
+
+  it("keeps the schema section and fills in the schema when there is one", () => {
+    expect(renderSchema(prompt, '{"a": "$&"}')).toBe('Intro\n\nReturn JSON:\n{"a": "$&"}\n\n');
+  });
+
+  it("keeps the no-schema section when there is none", () => {
+    expect(renderSchema(prompt, undefined)).toBe("Intro\n\nWrite a report.\n\n");
+  });
+
+  it("leaves a prompt without placeholders unchanged", () => {
+    expect(renderSchema("plain", "{}")).toBe("plain");
+  });
+});
+
+describe("hasSchemaPlaceholder", () => {
+  it("detects any of the three placeholder forms", () => {
+    expect(hasSchemaPlaceholder("{{schema}}")).toBe(true);
+    expect(hasSchemaPlaceholder("{{#schema}}x{{/schema}}")).toBe(true);
+    expect(hasSchemaPlaceholder("{{^schema}}x{{/schema}}")).toBe(true);
+    expect(hasSchemaPlaceholder("no placeholders")).toBe(false);
+  });
+});
+
+// Guards the contract between this extension and the default agent it ships with.
+describe("agents/worker.md", () => {
+  const { body } = parseFrontmatter(fs.readFileSync(new URL("../../../agents/worker.md", import.meta.url), "utf-8"));
+
+  it("states the output contract itself, with the schema and the error form", () => {
+    expect(hasSchemaPlaceholder(body)).toBe(true);
+    const withSchema = renderSchema(body, '{"count": "number"}');
+    expect(withSchema).toContain('{"count": "number"}');
+    expect(withSchema).toContain(`{"${ERROR_KEY}": "<one-line reason>"}`);
+    expect(withSchema).not.toContain("## Completed");
+    expect(withSchema).not.toMatch(/\{\{/);
+  });
+
+  it("falls back to its Markdown report without a schema", () => {
+    const withoutSchema = renderSchema(body, undefined);
+    expect(withoutSchema).toContain("## Completed");
+    expect(withoutSchema).not.toContain(ERROR_KEY);
+    expect(withoutSchema).not.toMatch(/\{\{/);
   });
 });
