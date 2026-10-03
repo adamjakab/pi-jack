@@ -10,10 +10,11 @@
  * Child runs: pi --mode json -p --no-session
  * Without `agent`, the child runs as DEFAULT_AGENT (agents/worker.md), or a bare pi agent if that file is missing.
  *
- * Output contract: with a schema, the child must reply with one bare JSON value matching it, or
- * `{"subagent_error": "..."}` if it cannot finish; the extension parses that reply into `data` and turns the error
- * form into a failed result. An agent states the contract in its own instructions through schema placeholders
- * (see renderSchema); for an agent without them, the extension appends outputContract() to its system prompt.
+ * Output contract: every child has a schema (the call's `schema`, else the agent's `schema` frontmatter, else
+ * DEFAULT_SCHEMA) and must reply with one bare JSON value matching it, or `{"subagent_error": "..."}` if it cannot
+ * finish; the extension parses that reply into `data` and turns the error form into a failed result. An agent states
+ * the contract in its own instructions around a `{{schema}}` placeholder; for an agent without one, the extension
+ * appends outputContract() to its system prompt.
  */
 
 import { spawn } from "node:child_process";
@@ -30,10 +31,13 @@ export const MAX_PARALLEL = 2;
 /** Agent used when a call omits `agent`. */
 export const DEFAULT_AGENT = "worker";
 
+/** Schema used when neither the call nor the agent gives one. */
+export const DEFAULT_SCHEMA = '{"result": "text"}';
+
 /** The only key of the reply a child sends, under the output contract, when it cannot complete the task. */
 export const ERROR_KEY = "subagent_error";
 
-/** The extension's side of the output contract, appended to the child's system prompt whenever a schema applies. */
+/** The output contract for an agent whose instructions don't state it, appended to its system prompt. */
 export function outputContract(schema: string): string {
   return [
     "## Output contract",
@@ -53,23 +57,16 @@ export function outputContract(schema: string): string {
   ].join("\n");
 }
 
-const SCHEMA_SECTION = /\{\{([#^])schema\}\}([\s\S]*?)\{\{\/schema\}\}/g;
-const SCHEMA_PLACEHOLDER = /\{\{[#^]?schema\}\}/;
+const SCHEMA_PLACEHOLDER = /\{\{schema\}\}/g;
 
 /** Whether an agent's instructions place the schema themselves, and so state the output contract on their own. */
 export function hasSchemaPlaceholder(prompt: string): boolean {
-  return SCHEMA_PLACEHOLDER.test(prompt);
+  return prompt.includes("{{schema}}");
 }
 
-/**
- * Fills an agent's schema placeholders: `{{schema}}` becomes the schema, `{{#schema}}…{{/schema}}` is kept only
- * when there is a schema, and `{{^schema}}…{{/schema}}` only when there is none.
- */
-export function renderSchema(prompt: string, schema: string | undefined): string {
-  return prompt
-    .replace(SCHEMA_SECTION, (_, kind: string, inner: string) => ((kind === "#") === Boolean(schema) ? inner : ""))
-    .replace(/\{\{schema\}\}/g, () => schema ?? "")
-    .replace(/\n{3,}/g, "\n\n");
+/** Replaces each `{{schema}}` in an agent's instructions with the schema. */
+export function renderSchema(prompt: string, schema: string): string {
+  return prompt.replace(SCHEMA_PLACEHOLDER, () => schema);
 }
 
 /** Parses a reply made under the output contract, tolerating Markdown fences or stray prose around the JSON. */
@@ -206,7 +203,7 @@ async function runSingleSubagent(
   let extraPrompt: string | undefined;
   let tools: string[] | undefined;
   let model: string | undefined;
-  let schemaHint = schemaInput;
+  let schema = schemaInput;
   let resolvedAgentName = agentNameInput ?? "direct";
 
   const agents = discoverAgents();
@@ -233,7 +230,7 @@ async function runSingleSubagent(
     model = agent.model;
     resolvedAgentName = agent.name;
     // A schema passed on the call wins over the agent's default.
-    schemaHint = schemaInput ?? agent.schema;
+    schema = schemaInput ?? agent.schema;
   } else {
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
     const base = agents.find((a) => a.name === DEFAULT_AGENT);
@@ -241,12 +238,13 @@ async function runSingleSubagent(
     extraPrompt = systemPromptInput;
     tools = normalizeTools(toolsInput) ?? base?.tools;
     model = modelInput ?? base?.model;
-    schemaHint = schemaInput ?? base?.schema;
+    schema = schemaInput ?? base?.schema;
     resolvedAgentName = base?.name ?? "direct";
   }
 
-  const contract = schemaHint && !hasSchemaPlaceholder(agentPrompt) ? outputContract(schemaHint) : undefined;
-  const systemPrompt = [renderSchema(agentPrompt, schemaHint), extraPrompt, contract]
+  schema ??= DEFAULT_SCHEMA;
+  const contract = hasSchemaPlaceholder(agentPrompt) ? undefined : outputContract(schema);
+  const systemPrompt = [renderSchema(agentPrompt, schema), extraPrompt, contract]
     .filter((p) => p?.trim())
     .map((p) => p!.trim())
     .join("\n\n");
@@ -259,15 +257,13 @@ async function runSingleSubagent(
   let tmpDir: string | null = null;
 
   try {
-    if (systemPrompt.trim()) {
-      const tmp = await writeTempPrompt(resolvedAgentName, systemPrompt);
-      tmpPromptPath = tmp.filePath;
-      tmpDir = tmp.dir;
-      args.push("--append-system-prompt", tmpPromptPath);
-    }
+    const tmp = await writeTempPrompt(resolvedAgentName, systemPrompt);
+    tmpPromptPath = tmp.filePath;
+    tmpDir = tmp.dir;
+    args.push("--append-system-prompt", tmpPromptPath);
 
     // A short reminder at the end of the task; the contract itself lives in the system prompt.
-    args.push(schemaHint ? `${taskText}\n\n---\nReply with only the JSON your instructions describe.` : taskText);
+    args.push(`${taskText}\n\n---\nReply with only the JSON your instructions describe.`);
 
     const invocation = getPiInvocation(args);
     const proc = spawn(invocation.command, invocation.args, {
@@ -335,7 +331,7 @@ async function runSingleSubagent(
 
     if (!raw) {
       outputError = "No output";
-    } else if (schemaHint) {
+    } else {
       try {
         data = parseJsonReply(raw);
         parsed = true;
@@ -343,9 +339,6 @@ async function runSingleSubagent(
       } catch (e) {
         outputError = e instanceof Error ? e.message : String(e);
       }
-    } else {
-      // No schema: keep the model's free-form reply and wrap it ourselves so data is always JSON.
-      data = { response: raw };
     }
 
     const success = exitCode === 0 && !outputError;
@@ -443,10 +436,9 @@ const subagentRunnerTool = defineTool({
     schema: Type.Optional(
       Type.String({
         description:
-          "Optional expected JSON shape. When provided, each subagent must reply with only a JSON value " +
-          "of this shape, parsed into `data`; a subagent that cannot finish fails with its stated reason. " +
-          "Defaults to the named agent's `schema` frontmatter, if any. " +
-          "Without a schema, the free-form reply is returned as `data: { response: <text> }`.",
+          "Optional expected JSON shape. Each subagent must reply with only a JSON value of this shape, " +
+          "parsed into `data`; a subagent that cannot finish fails with its stated reason. " +
+          `Defaults to the agent's \`schema\` frontmatter, else \`${DEFAULT_SCHEMA}\`.`,
       }),
     ),
   }),

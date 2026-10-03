@@ -131,14 +131,10 @@ describe("contractError", () => {
 });
 
 describe("renderSchema", () => {
-  const prompt = "Intro\n\n{{#schema}}\nReturn JSON:\n{{schema}}\n{{/schema}}\n\n{{^schema}}\nWrite a report.\n{{/schema}}\n";
-
-  it("keeps the schema section and fills in the schema when there is one", () => {
-    expect(renderSchema(prompt, '{"a": "$&"}')).toBe('Intro\n\nReturn JSON:\n{"a": "$&"}\n\n');
-  });
-
-  it("keeps the no-schema section when there is none", () => {
-    expect(renderSchema(prompt, undefined)).toBe("Intro\n\nWrite a report.\n\n");
+  it("replaces every {{schema}} with the schema, verbatim", () => {
+    expect(renderSchema("Return {{schema}}, i.e. {{schema}}.", '{"a": "$&"}')).toBe(
+      'Return {"a": "$&"}, i.e. {"a": "$&"}.',
+    );
   });
 
   it("leaves a prompt without placeholders unchanged", () => {
@@ -147,10 +143,8 @@ describe("renderSchema", () => {
 });
 
 describe("hasSchemaPlaceholder", () => {
-  it("detects any of the three placeholder forms", () => {
-    expect(hasSchemaPlaceholder("{{schema}}")).toBe(true);
-    expect(hasSchemaPlaceholder("{{#schema}}x{{/schema}}")).toBe(true);
-    expect(hasSchemaPlaceholder("{{^schema}}x{{/schema}}")).toBe(true);
+  it("detects {{schema}}", () => {
+    expect(hasSchemaPlaceholder("Return {{schema}}")).toBe(true);
     expect(hasSchemaPlaceholder("no placeholders")).toBe(false);
   });
 });
@@ -161,17 +155,9 @@ describe("agents/worker.md", () => {
 
   it("states the output contract itself, with the schema and the error form", () => {
     expect(hasSchemaPlaceholder(body)).toBe(true);
-    const withSchema = renderSchema(body, '{"count": "number"}');
-    expect(withSchema).toContain('{"count": "number"}');
-    expect(withSchema).toContain(`{"${ERROR_KEY}": "<one-line reason>"}`);
-    expect(withSchema).not.toContain("## Completed");
-    expect(withSchema).not.toMatch(/\{\{/);
-  });
-
-  it("falls back to its Markdown report without a schema", () => {
-    const withoutSchema = renderSchema(body, undefined);
-    expect(withoutSchema).toContain("## Completed");
-    expect(withoutSchema).not.toContain(ERROR_KEY);
-    expect(withoutSchema).not.toMatch(/\{\{/);
+    const rendered = renderSchema(body, '{"count": "number"}');
+    expect(rendered).toContain('{"count": "number"}');
+    expect(rendered).toContain(`{"${ERROR_KEY}": "<one-line reason>"}`);
+    expect(rendered).not.toMatch(/\{\{/);
   });
 });

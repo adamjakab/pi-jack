@@ -19,7 +19,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 
 const { spawn } = await import("node:child_process");
-const { default: extension, MAX_PARALLEL, DEFAULT_AGENT } = await import("../index.ts");
+const { default: extension, MAX_PARALLEL, DEFAULT_AGENT, DEFAULT_SCHEMA } = await import("../index.ts");
 
 interface ChildScript {
   events?: object[];
@@ -99,15 +99,25 @@ describe("registration", () => {
 });
 
 describe("single task", () => {
-  it("wraps a free-form reply as { response } when there is no schema", async () => {
-    scriptChildren({ events: [assistantEnd("hello")] });
+  it("uses the default schema when neither the call nor the agent gives one", async () => {
+    scriptChildren({ events: [assistantEnd('{"result": "hello"}')] });
     const result = await run({ task: "say hello" });
 
     const [r] = result.structuredContent.results;
+    expect(systemPrompts[0]).toMatch(/^## Output contract\n[\s\S]*\n\{"result": "text"\}$/);
+    expect(systemPrompts[0]).toContain(DEFAULT_SCHEMA);
     expect(result.isError).toBe(false);
-    expect(r).toMatchObject({ success: true, parsed: false, data: { response: "hello" }, agent: "direct" });
+    expect(r).toMatchObject({ success: true, parsed: true, data: { result: "hello" }, agent: "direct" });
     expect(r.usage).toEqual({ turns: 1, input: 10, output: 5, cacheRead: 1, cacheWrite: 2, cost: 0.01 });
-    expect(result.content[0].text).toBe("✓ direct: say hello\nhello");
+    expect(result.content[0].text).toBe('✓ direct: say hello\n{"result": "hello"}');
+  });
+
+  it("fails when a reply without a schema is not JSON", async () => {
+    scriptChildren({ events: [assistantEnd("hello")] });
+    const result = await run({ task: "say hello" });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.results[0]).toMatchObject({ success: false, parsed: false, raw: "hello" });
   });
 
   it("passes model and tools, and never lets the child call subagent_runner", async () => {
@@ -131,13 +141,6 @@ describe("single task", () => {
     expect(systemPrompts[0]).toMatch(/^## Output contract\n[\s\S]*\n\{"count": "number"\}$/);
     expect(spawnArgs().at(-1)).toMatch(/^count\n[\s\S]*only the JSON/);
     expect(result.structuredContent.results[0]).toMatchObject({ success: true, parsed: true, data: { count: 3 } });
-  });
-
-  it("gives no contract and no prompt file without a schema", async () => {
-    scriptChildren({ events: [assistantEnd("ok")] });
-    await run({ task: "t" });
-    expect(systemPrompts).toEqual([undefined]);
-    expect(spawnArgs().at(-1)).toBe("t");
   });
 
   it("fails with the agent's reason when it replies with the contract's error form", async () => {
@@ -203,17 +206,17 @@ describe("named agent", () => {
     expect(systemPrompts[0]).toMatch(/You are a probe\.\n+## Output contract\n[\s\S]*\{"label": "string"\}$/);
   });
 
-  it("fills the agent's schema placeholders instead of appending the generic contract", async () => {
+  it("fills the agent's {{schema}} placeholder instead of appending the generic contract", async () => {
     fs.writeFileSync(
       path.join(agentDir.current, "agents", "templated.md"),
-      "---\nname: templated\ndescription: d\n---\nReturn {{schema}}.{{^schema}} Or prose.{{/schema}}\n",
+      "---\nname: templated\ndescription: d\n---\nReturn {{schema}}.\n",
     );
-    scriptChildren({ events: [assistantEnd('{"n": 1}')] }, { events: [assistantEnd("prose")] });
+    scriptChildren({ events: [assistantEnd('{"n": 1}')] }, { events: [assistantEnd('{"result": "x"}')] });
     await run({ agent: "templated", task: "t", schema: '{"n": "number"}' });
     await run({ agent: "templated", task: "t" });
 
     fs.rmSync(path.join(agentDir.current, "agents", "templated.md"));
-    expect(systemPrompts).toEqual(['Return {"n": "number"}.', "Return . Or prose."]);
+    expect(systemPrompts).toEqual(['Return {"n": "number"}.', `Return ${DEFAULT_SCHEMA}.`]);
   });
 
   it("removes the temporary prompt file afterwards", async () => {
@@ -245,7 +248,7 @@ describe("default agent", () => {
   });
 
   it("runs the default agent when `agent` is omitted", async () => {
-    scriptChildren({ events: [assistantEnd("done")] });
+    scriptChildren({ events: [assistantEnd('{"result": "done"}')] });
     const result = await run({ task: "t" });
 
     expect(systemPrompts[0]).toContain("You are a worker.");
@@ -265,17 +268,17 @@ describe("default agent", () => {
 
 describe("batch", () => {
   it("lets items inherit top-level defaults and keeps results in order", async () => {
-    scriptChildren({ events: [assistantEnd("one")] }, { events: [assistantEnd("two")] });
+    scriptChildren({ events: [assistantEnd('{"result": "one"}')] }, { events: [assistantEnd('{"result": "two"}')] });
     const result = await run({ model: "shared", tasks: [{ task: "a" }, { task: "b", model: "own" }] });
 
     expect(spawnArgs(0)).toContain("shared");
     expect(spawnArgs(1)).toContain("own");
-    expect(result.structuredContent.results.map((r: any) => r.data.response)).toEqual(["one", "two"]);
-    expect(result.content[0].text).toMatch(/^\[1\/2\] ✓ direct: a\none\n\n\[2\/2\] ✓ direct: b\ntwo$/);
+    expect(result.structuredContent.results.map((r: any) => r.data.result)).toEqual(["one", "two"]);
+    expect(result.content[0].text).toMatch(/^\[1\/2\] ✓ direct: a\n.*"one"\}\n\n\[2\/2\] ✓ direct: b\n.*"two"\}$/);
   });
 
   it("marks the whole call as an error when any item fails", async () => {
-    scriptChildren({ events: [assistantEnd("ok")] }, { exitCode: 1 });
+    scriptChildren({ events: [assistantEnd('{"result": "ok"}')] }, { exitCode: 1 });
     const result = await run({ tasks: [{ task: "a" }, { task: "b" }] });
 
     expect(result.isError).toBe(true);

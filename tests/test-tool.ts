@@ -107,7 +107,7 @@ const cases: Record<string, () => Promise<string[]>> = {
     return failures;
   },
 
-  async "no schema wraps reply as { response }"() {
+  async "no schema falls back to the default { result } schema"() {
     const failures: string[] = [];
     const run = await runParent(
       "Call the subagent_runner tool exactly once with task='Reply with the single word hello.' and tools='read'. " +
@@ -116,11 +116,9 @@ const cases: Record<string, () => Promise<string[]>> = {
     if (!finished(failures, run, 1)) return failures;
 
     const r = run.tools[0].result.structuredContent.results[0];
-    const body = run.tools[0].result.content[0].text.split("\n").slice(1).join("\n");
-    check(failures, /hello/i.test(body), `content is missing the reply: ${JSON.stringify(body)}`);
     check(failures, r.success === true, `success=${r.success} error=${r.error}`);
-    check(failures, r.parsed === false, `parsed=${r.parsed}, expected false`);
-    check(failures, /hello/i.test(r.data?.response ?? ""), `unexpected data ${JSON.stringify(r.data)}`);
+    check(failures, r.parsed === true, `parsed=${r.parsed}, expected true`);
+    check(failures, /hello/i.test(r.data?.result ?? ""), `unexpected data ${JSON.stringify(r.data)}`);
     return failures;
   },
 

@@ -10,9 +10,8 @@ Demonstrate the `subagent_runner` tool by surveying ${1:-the current folder} wit
 Call `subagent_runner` exactly **once**, with these parameters and nothing else:
 
 - run_mode: `parallel`
-- `tools`: `"read,grep,find,ls"` (read-only; the subagents must not change anything)
 - `schema`: `{"topic": "string", "findings": ["string"], "summary": "string"}`
-- no `agent` (the default worker agent is used)
+
 - `tasks` (topic names are in the square brackets):
   - [LAYOUT] Layout of ${1:-the current folder}: list its top-level entries and say in a few words what each one is for.
   - [FTYPE] File types in ${1:-the current folder}: count files per extension, ignoring .git and node_modules, and report the five most common.
