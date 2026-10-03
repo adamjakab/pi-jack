@@ -4,5 +4,10 @@
   "private": true,
   "description": "Simple subagent extension with structured JSON output.",
   "type": "module",
-  "main": "index.ts"
+  "main": "index.ts",
+  "scripts": {
+    "test": "vitest run --root ../.. --project subagent-runner",
+    "test:watch": "vitest --root ../.. --project subagent-runner",
+    "test:e2e": "node tests/test-tool.ts"
+  }
 }

@@ -20,7 +20,7 @@ import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-
 import { Type } from "typebox";
 import { discoverAgents } from "./agents.ts";
 
-const MAX_PARALLEL = 4;
+export const MAX_PARALLEL = 2;
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
@@ -48,7 +48,7 @@ async function writeTempPrompt(agentName: string, prompt: string): Promise<{ dir
   return { dir: tmpDir, filePath };
 }
 
-function normalizeTools(value: unknown): string[] | undefined {
+export function normalizeTools(value: unknown): string[] | undefined {
   const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   const tools = raw
     .filter((t): t is string => typeof t === "string")
@@ -290,7 +290,7 @@ async function runSingleSubagent(
   }
 }
 
-async function mapWithLimit<TIn, TOut>(
+export async function mapWithLimit<TIn, TOut>(
   items: TIn[],
   concurrency: number,
   fn: (item: TIn, index: number) => Promise<TOut>,
@@ -476,12 +476,12 @@ const subagentRunnerTool = defineTool({
   },
 });
 
-function taskLabel(task: string): string {
+export function taskLabel(task: string): string {
   const firstLine = task.split("\n")[0];
   return `${firstLine.slice(0, 60)}${firstLine.length > 60 || firstLine !== task ? "..." : ""}`;
 }
 
-function getFinalAssistantText(messages: Message[]): string | undefined {
+export function getFinalAssistantText(messages: Message[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role === "assistant") {
