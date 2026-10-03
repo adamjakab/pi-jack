@@ -6,9 +6,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import subagentChild from "../child.ts";
-import { FAIL_TOOL, MAX_FORMAT_RETRIES, RESULT_TOOL, SCHEMA_FLAG } from "../contract.ts";
+import {
+  FAIL_TOOL,
+  MAX_FORMAT_RETRIES,
+  RESULT_TOOL,
+  SCHEMA_FLAG,
+} from "../contract.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-child-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -17,7 +22,11 @@ const schema = {
   type: "object",
   properties: {
     count: { type: "integer", description: "How many." },
-    files: { type: "array", items: { type: "string" }, description: "Their names." },
+    files: {
+      type: "array",
+      items: { type: "string" },
+      description: "Their names.",
+    },
   },
   required: ["count", "files"],
   additionalProperties: false,
@@ -49,7 +58,8 @@ function startChild(flag: string | undefined, initialTools = ["read"]) {
     tools,
     active: () => active,
     settle: () => handlers.get("agent_before_settle")!({}, ctx),
-    call: (name: string, params: unknown) => tools.get(name).execute("id", params),
+    call: (name: string, params: unknown) =>
+      tools.get(name).execute("id", params),
   };
 }
 
@@ -64,7 +74,10 @@ describe("child extension", () => {
     const child = startChild(schemaFile);
     const result = child.tools.get(RESULT_TOOL);
     expect(result.parameters).toEqual(schema);
-    expect(result.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
+    expect(result.constrainedSampling).toEqual({
+      type: "json_schema",
+      strict: "prefer",
+    });
     expect(child.tools.get(FAIL_TOOL)).toBeDefined();
     expect(child.active()).toEqual(["read", RESULT_TOOL, FAIL_TOOL]);
   });
@@ -72,7 +85,10 @@ describe("child extension", () => {
   it("accepts a valid answer and ends the run", async () => {
     const child = startChild(schemaFile);
     const answer = { count: 2, files: ["a.ts", "b.ts"] };
-    expect(await child.call(RESULT_TOOL, answer)).toMatchObject({ details: answer, terminate: true });
+    expect(await child.call(RESULT_TOOL, answer)).toMatchObject({
+      details: answer,
+      terminate: true,
+    });
     expect(child.settle()).toBeUndefined();
   });
 
@@ -80,7 +96,9 @@ describe("child extension", () => {
     const child = startChild(schemaFile);
     const bad = { count: "two", files: ["a.ts"] };
     for (let i = 0; i < 3; i++) {
-      await expect(child.call(RESULT_TOOL, bad)).rejects.toThrow(/call subagent_result again:\n- \/count: /);
+      await expect(child.call(RESULT_TOOL, bad)).rejects.toThrow(
+        /call subagent_result again:\n- \/count: /,
+      );
     }
     // Still waiting for an answer, so it gets nudged.
     expect(child.settle()).toMatchObject({ continue: true });
@@ -99,13 +117,26 @@ describe("child extension", () => {
     const child = startChild(schemaFile);
     for (let i = 0; i < MAX_FORMAT_RETRIES; i++) {
       const nudge = child.settle();
-      expect(nudge).toMatchObject({ continue: true, entries: [{ type: "custom_message", display: false }] });
+      expect(nudge).toMatchObject({
+        continue: true,
+        entries: [{ type: "custom_message", display: false }],
+      });
       expect(nudge.entries[0].content).toContain(RESULT_TOOL);
     }
     expect(child.settle()).toBeUndefined();
   });
 
-  it("registers nothing when the schema file is unusable", () => {
-    expect(startChild(path.join(tmp, "missing.json")).tools.size).toBe(0);
+  it("registers nothing, and reports why, when the schema file is unusable", () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(startChild(path.join(tmp, "missing.json")).tools.size).toBe(0);
+      expect(logged).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^\[subagent\] Could not load the schema: .*missing\.json/,
+        ),
+      );
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

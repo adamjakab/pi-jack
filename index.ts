@@ -21,10 +21,18 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import { defineTool, type ExtensionAPI, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type ExtensionAPI,
+  withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import { Type, type TSchema } from "typebox";
-import { type AgentConfig, type AgentLoadError, discoverAgents } from "./agents.ts";
+import {
+  type AgentConfig,
+  type AgentLoadError,
+  discoverAgents,
+} from "./agents.ts";
 import {
   DEFAULT_SCHEMA,
   FAIL_TOOL,
@@ -67,19 +75,28 @@ async function writeTempFiles(
 ): Promise<{ dir: string; schemaPath: string; promptPath?: string }> {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
   const write = (filePath: string, text: string) =>
-    withFileMutationQueue(filePath, () => fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 }));
+    withFileMutationQueue(filePath, () =>
+      fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 }),
+    );
 
   const schemaPath = path.join(dir, "schema.json");
   await write(schemaPath, JSON.stringify(schema));
   if (!prompt) return { dir, schemaPath };
 
-  const promptPath = path.join(dir, `prompt-${agentName.replace(/[^\w.-]+/g, "_")}.md`);
+  const promptPath = path.join(
+    dir,
+    `prompt-${agentName.replace(/[^\w.-]+/g, "_")}.md`,
+  );
   await write(promptPath, prompt);
   return { dir, schemaPath, promptPath };
 }
 
 export function normalizeTools(value: unknown): string[] | undefined {
-  const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
   const tools = raw
     .filter((t): t is string => typeof t === "string")
     .map((t) => t.trim())
@@ -113,13 +130,22 @@ interface SingleResult {
 const taskItemSchema = Type.Object({
   task: Type.String({ description: "Task description for this subagent" }),
   agent: Type.Optional(
-    Type.String({ description: "Optional. Name of an available agent; defaults to the top-level `agent`, if any" }),
+    Type.String({
+      description:
+        "Optional. Name of an available agent; defaults to the top-level `agent`, if any",
+    }),
   ),
-  system_prompt: Type.Optional(Type.String({ description: "System prompt override for this task" })),
+  system_prompt: Type.Optional(
+    Type.String({ description: "System prompt override for this task" }),
+  ),
   tools: Type.Optional(
-    Type.Union([Type.String(), Type.Array(Type.String())], { description: "Tools for this task" }),
+    Type.Union([Type.String(), Type.Array(Type.String())], {
+      description: "Tools for this task",
+    }),
   ),
-  model: Type.Optional(Type.String({ description: "Model override for this task" })),
+  model: Type.Optional(
+    Type.String({ description: "Model override for this task" }),
+  ),
 });
 
 const outputSchema = Type.Object({
@@ -145,7 +171,14 @@ const outputSchema = Type.Object({
   ),
 });
 
-const zeroUsage = (): SubagentUsage => ({ turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+const zeroUsage = (): SubagentUsage => ({
+  turns: 0,
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0,
+});
 
 async function runSingleSubagent(
   taskText: string,
@@ -184,23 +217,31 @@ async function runSingleSubagent(
   const agent = agents.find((a) => a.name === wanted);
   // A broken file for the wanted agent must not quietly turn into another agent: the built-in one it was meant to
   // override, or, for the default agent, a bare pi agent.
-  const brokenFile = loadErrors.find((e) => e.file === `${wanted}.md` && (e.source === "user" || !agent));
+  const brokenFile = loadErrors.find(
+    (e) => e.file === `${wanted}.md` && (e.source === "user" || !agent),
+  );
   if (brokenFile) {
     const which = agentNameInput ? "agent" : "default agent";
-    return failure(`The ${which} file ${brokenFile.file} could not be loaded: ${brokenFile.message}`);
+    return failure(
+      `The ${which} file ${brokenFile.file} could not be loaded: ${brokenFile.message}`,
+    );
   }
   if (agentNameInput) {
     if (!agent) {
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-      const broken = loadErrors.length > 0 ? ` Agent files that failed to load: ${describeLoadErrors(loadErrors)}.` : "";
+      const broken =
+        loadErrors.length > 0
+          ? ` Agent files that failed to load: ${describeLoadErrors(loadErrors)}.`
+          : "";
       return failure(
         `Unknown agent: "${agentNameInput}". Available: ${available}.${broken} ` +
           "Omit `agent` to run the default subagent.",
       );
     }
+    // A named agent owns its prompt and tools; the model is only a default, so a call can run it on another one.
     agentPrompt = agent.systemPrompt;
     tools = agent.tools;
-    model = agent.model;
+    model = modelInput ?? agent.model;
   } else {
     // The default agent is the base; call-level system_prompt is appended, tools/model/schema override it.
     agentPrompt = agent?.systemPrompt ?? "";
@@ -232,17 +273,36 @@ async function runSingleSubagent(
     const tmp = await writeTempFiles(resolvedAgentName, schema, systemPrompt);
     tmpDir = tmp.dir;
 
-    const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools", "subagent_runner"];
-    args.push("--extension", CHILD_EXTENSION, `--${SCHEMA_FLAG}`, tmp.schemaPath);
+    const args: string[] = [
+      "--mode",
+      "json",
+      "-p",
+      "--no-session",
+      "--exclude-tools",
+      "subagent_runner",
+    ];
+    args.push(
+      "--extension",
+      CHILD_EXTENSION,
+      `--${SCHEMA_FLAG}`,
+      tmp.schemaPath,
+    );
     if (model) args.push("--model", model);
     // `--tools` is a complete allowlist, so the result tools must be on it or the child cannot answer.
-    if (tools && tools.length > 0) args.push("--tools", [...new Set([...tools, RESULT_TOOL, FAIL_TOOL])].join(","));
+    if (tools && tools.length > 0)
+      args.push(
+        "--tools",
+        [...new Set([...tools, RESULT_TOOL, FAIL_TOOL])].join(","),
+      );
     if (tmp.promptPath) args.push("--append-system-prompt", tmp.promptPath);
     args.push(taskText);
 
     const usage = zeroUsage();
     const run = await runChild(args, usage, signal, onProgress);
-    const result = (error: string | undefined, data: unknown = null): SingleResult => ({
+    const result = (
+      error: string | undefined,
+      data: unknown = null,
+    ): SingleResult => ({
       success: !error,
       parsed: data !== null,
       data,
@@ -255,17 +315,30 @@ async function runSingleSubagent(
     });
 
     if (run.retriesExhausted) {
-      return result(`No valid answer after ${run.submissions} attempts. ${run.lastRejection}`);
+      return result(
+        `No valid answer after ${run.submissions} attempts. ${run.lastRejection}`,
+      );
     }
-    if (run.exitCode !== 0) return result(run.stderr || `Exit code ${run.exitCode}`, run.answer ?? null);
+    if (run.exitCode !== 0)
+      return result(
+        run.stderr || `Exit code ${run.exitCode}`,
+        run.answer ?? null,
+      );
     if (run.failReason !== undefined) return result(run.failReason);
     if (run.answer !== undefined) {
       // The child validated it already; checking again here guards against a child that skipped or broke that step.
       const errors = schemaErrors(schema, run.answer);
-      return result(errors.length > 0 ? `The answer does not match the schema: ${errors.join("; ")}` : undefined, run.answer);
+      return result(
+        errors.length > 0
+          ? `The answer does not match the schema: ${errors.join("; ")}`
+          : undefined,
+        run.answer,
+      );
     }
     if (run.lastRejection) {
-      return result(`No valid answer after ${run.submissions} attempts. ${run.lastRejection}`);
+      return result(
+        `No valid answer after ${run.submissions} attempts. ${run.lastRejection}`,
+      );
     }
     return result(`The subagent finished without calling ${RESULT_TOOL}.`);
   } finally {
@@ -333,22 +406,36 @@ async function runChild(
       }
     } else if (event.type === "tool_execution_start") {
       const arg = event.args?.command ?? event.args?.path ?? "";
-      onProgress?.(usage.turns, `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`);
-    } else if (event.type === "tool_execution_end" && event.toolName === RESULT_TOOL) {
+      onProgress?.(
+        usage.turns,
+        `${event.toolName}${arg ? ` ${String(arg).split("\n")[0].slice(0, 60)}` : ""}`,
+      );
+    } else if (
+      event.type === "tool_execution_end" &&
+      event.toolName === RESULT_TOOL
+    ) {
       run.submissions++;
       if (!event.isError) {
         run.answer = event.result?.details;
         return;
       }
       // Rejections come from pi's own argument validation as well as child.ts, so the cap is enforced here.
-      run.lastRejection = event.result?.content?.[0]?.text ?? "The answer was rejected.";
+      run.lastRejection =
+        event.result?.content?.[0]?.text ?? "The answer was rejected.";
       rejections++;
       if (rejections > MAX_FORMAT_RETRIES && !run.retriesExhausted) {
         run.retriesExhausted = true;
         proc.kill("SIGTERM");
       }
-    } else if (event.type === "tool_execution_end" && event.toolName === FAIL_TOOL && !event.isError) {
-      run.failReason = String(event.result?.details?.reason ?? "The subagent gave up without a reason.");
+    } else if (
+      event.type === "tool_execution_end" &&
+      event.toolName === FAIL_TOOL &&
+      !event.isError
+    ) {
+      run.failReason = String(
+        event.result?.details?.reason ??
+          "The subagent gave up without a reason.",
+      );
     }
   };
 
@@ -413,15 +500,19 @@ const subagentRunnerTool = defineTool({
     "Batch: pass `tasks` array with `run_mode: 'sequential' (default) or 'parallel'`.\n" +
     `No agent (the usual case): omit \`agent\`; the subagent is the default \`${DEFAULT_AGENT}\` agent, ` +
     "optionally customized with `system_prompt` (appended), `tools`, `model`.\n" +
-    "Named agent: pass `agent` only with one of the names listed below; never invent one.",
+    "Named agent: pass `agent` only with one of the names listed below; never invent one. It keeps its own " +
+    "prompt and tools; `model` still overrides the agent's model.",
   parameters: Type.Object({
     // Single task (backward compatible)
-    task: Type.Optional(Type.String({ description: "Single task description" })),
+    task: Type.Optional(
+      Type.String({ description: "Single task description" }),
+    ),
 
     // Batch tasks
     tasks: Type.Optional(
       Type.Array(taskItemSchema, {
-        description: "Multiple tasks to run. Each item inherits missing fields from the top-level params.",
+        description:
+          "Multiple tasks to run. Each item inherits missing fields from the top-level params.",
       }),
     ),
 
@@ -435,18 +526,27 @@ const subagentRunnerTool = defineTool({
     // Global defaults (used when tasks[] items don't specify their own)
     agent: Type.Optional(
       Type.String({
-        description: "Optional. Name of an available agent (see tool description); omit otherwise. Inherited by batch items.",
+        description:
+          "Optional. Name of an available agent (see tool description); omit otherwise. Inherited by batch items.",
       }),
     ),
     system_prompt: Type.Optional(
-      Type.String({ description: "Default system prompt. Inherited by batch items." }),
+      Type.String({
+        description: "Default system prompt. Inherited by batch items.",
+      }),
     ),
     tools: Type.Optional(
       Type.Union([Type.String(), Type.Array(Type.String())], {
         description: "Default tools. Inherited by batch items.",
       }),
     ),
-    model: Type.Optional(Type.String({ description: "Default model. Inherited by batch items." })),
+    model: Type.Optional(
+      Type.String({
+        description:
+          "Model for the subagents, as `provider/id` or a pattern (as for `pi --model`); overrides a named " +
+          "agent's model. Inherited by batch items.",
+      }),
+    ),
 
     // Schema for JSON output
     schema: Type.Optional(
@@ -492,7 +592,9 @@ const subagentRunnerTool = defineTool({
       });
     } else {
       return {
-        content: [{ type: "text", text: "Either `task` or `tasks` must be provided." }],
+        content: [
+          { type: "text", text: "Either `task` or `tasks` must be provided." },
+        ],
         structuredContent: {
           results: [
             {
@@ -504,7 +606,14 @@ const subagentRunnerTool = defineTool({
               task: "",
               error: "Either `task` or `tasks` must be provided.",
               attempts: 0,
-              usage: { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+              usage: {
+                turns: 0,
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0,
+              },
             },
           ],
         } as any,
@@ -520,36 +629,49 @@ const subagentRunnerTool = defineTool({
     const status = taskItems.map(() => "queued");
     const startedAt = Date.now();
     const reportProgress = () => {
-      const done = status.filter((s) => s.startsWith("✓") || s.startsWith("✗")).length;
+      const done = status.filter(
+        (s) => s.startsWith("✓") || s.startsWith("✗"),
+      ).length;
       const secs = Math.round((Date.now() - startedAt) / 1000);
-      const lines = taskItems.map((item, i) => `[${i + 1}] ${taskLabel(item.task)} — ${status[i]}`);
+      const lines = taskItems.map(
+        (item, i) => `[${i + 1}] ${taskLabel(item.task)} — ${status[i]}`,
+      );
       onUpdate?.({
-        content: [{ type: "text", text: `${done}/${taskItems.length} done (${secs}s)\n${lines.join("\n")}` }],
+        content: [
+          {
+            type: "text",
+            text: `${done}/${taskItems.length} done (${secs}s)\n${lines.join("\n")}`,
+          },
+        ],
         details: undefined as any,
       });
     };
     reportProgress();
 
-    const results = await mapWithLimit(taskItems, concurrency, async (item, i) => {
-      status[i] = "starting";
-      reportProgress();
-      const result = await runSingleSubagent(
-        item.task,
-        item.agent,
-        item.system_prompt,
-        item.tools,
-        item.model,
-        params.schema,
-        signal,
-        (turns, activity) => {
-          status[i] = `turn ${turns + 1}: ${activity}`;
-          reportProgress();
-        },
-      );
-      status[i] = `${result.success ? "✓" : "✗"} ${result.usage.turns} turns`;
-      reportProgress();
-      return result;
-    });
+    const results = await mapWithLimit(
+      taskItems,
+      concurrency,
+      async (item, i) => {
+        status[i] = "starting";
+        reportProgress();
+        const result = await runSingleSubagent(
+          item.task,
+          item.agent,
+          item.system_prompt,
+          item.tools,
+          item.model,
+          params.schema,
+          signal,
+          (turns, activity) => {
+            status[i] = `turn ${turns + 1}: ${activity}`;
+            reportProgress();
+          },
+        );
+        status[i] = `${result.success ? "✓" : "✗"} ${result.usage.turns} turns`;
+        reportProgress();
+        return result;
+      },
+    );
 
     const anyFailed = results.some((r) => !r.success);
 
@@ -561,7 +683,9 @@ const subagentRunnerTool = defineTool({
       const header = r.success
         ? `${prefix}✓ ${r.agent}: ${taskLabel(r.task)}${retried}`
         : `${prefix}✗ ${r.agent}: ${taskLabel(r.task)}${retried}\nError: ${r.error ?? "failed"}`;
-      return r.data !== null ? `${header}\n${JSON.stringify(r.data, null, 2)}` : header;
+      return r.data !== null
+        ? `${header}\n${JSON.stringify(r.data, null, 2)}`
+        : header;
     });
 
     return {
@@ -591,11 +715,20 @@ export function getFinalAssistantText(messages: Message[]): string | undefined {
 }
 
 function describeLoadErrors(errors: AgentLoadError[]): string {
-  return errors.map((e) => `${e.file}${e.source === "built-in" ? " [built-in]" : ""} (${e.message})`).join("; ");
+  return errors
+    .map(
+      (e) =>
+        `${e.file}${e.source === "built-in" ? " [built-in]" : ""} (${e.message})`,
+    )
+    .join("; ");
 }
 
 function describeAgent(agent: AgentConfig): string {
-  const origin = agent.overridesBuiltIn ? " (yours, overrides built-in)" : agent.source === "built-in" ? " (built-in)" : "";
+  const origin = agent.overridesBuiltIn
+    ? " (yours, overrides built-in)"
+    : agent.source === "built-in"
+      ? " (built-in)"
+      : "";
   return `- ${agent.name}${origin}: ${agent.description}`;
 }
 
@@ -606,7 +739,10 @@ export default function (pi: ExtensionAPI) {
     agents.length > 0
       ? `Available agents:\n${agents.map(describeAgent).join("\n")}`
       : "Available agents: none (always omit `agent`).";
-  pi.registerTool({ ...subagentRunnerTool, description: `${subagentRunnerTool.description}\n${available}` });
+  pi.registerTool({
+    ...subagentRunnerTool,
+    description: `${subagentRunnerTool.description}\n${available}`,
+  });
 
   if (errors.length > 0) {
     const message = `[subagent-runner] Agent files that failed to load: ${describeLoadErrors(errors)}`;

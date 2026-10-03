@@ -11,7 +11,8 @@ Call `subagent_runner` exactly **once**, with these parameters and nothing else:
 
 - run_mode: `parallel`
 - agent: `tester`
-- `schema`: this JSON Schema, as an object:
+- model: `stealth/space-bunny-alpha`
+- response schema:
 
   ```json
   {
