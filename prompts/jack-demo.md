@@ -43,7 +43,7 @@ Call `subagent_runner` exactly **once**, with these parameters and nothing else:
   - [LAYOUT] Layout of ${1:-the current folder}: list its top-level entries and say in a few words what each one is for.
   - [FTYPE] File types in ${1:-the current folder}: count files per extension, ignoring .git and node_modules, and report the five most common.
   - [NOTES] Open notes in ${1:-the current folder}: find TODO, FIXME and HACK comments, ignoring .git and node_modules, and report up to ten as "file:line: text".
-  - [DOCS] Docs in ${1:-the current folder}: read its README.md or AGENTS.md (whichever exists, top level only) and summarize what the project is in three findings.
+  - [DOCS] Docs in ${1:-the current folder}: read its README.md or AGENTS.md (whichever exists, top level only) and summarize what the project is in three findings. Use `medium` thinking level for this.
 
 Do not do any of this work yourself, before or after the call: the point is to watch the subagents do it.
 

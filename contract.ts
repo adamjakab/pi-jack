@@ -40,7 +40,8 @@ export const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
 
 /**
  * The level to run at: `requested` if the model supports it, else the next lower level it supports, else "off".
- * Pi's own clamping tries higher levels first, which would spend more than was asked for.
+ * Pi's own clamping tries higher levels first, which would spend more than was asked for. A model that can't turn
+ * thinking off still gets "off" here, and pi then raises it to the model's lowest level.
  */
 export function pickThinkingLevel(
   requested: ThinkingLevel,
