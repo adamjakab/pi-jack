@@ -179,6 +179,36 @@ describe("schemaProblems", () => {
     ]);
   });
 
+  it("checks the less common keywords: const, default, not, examples, dependentRequired", () => {
+    expect(
+      schemaProblems({
+        type: "object",
+        properties: {
+          kind: { const: "a", default: "a", examples: ["a"] },
+          other: { not: { type: "null" } },
+        },
+        dependentRequired: { kind: ["other"] },
+      }),
+    ).toEqual([]);
+    expect(
+      schemaProblems({
+        type: "object",
+        properties: {
+          kind: { examples: "a" },
+          other: { not: { type: "nul" } },
+        },
+        dependentRequired: { kind: "other" },
+      }),
+    ).toEqual([
+      "/properties/kind/examples: must be a list",
+      '/properties/other/not/type: "nul" is not a JSON Schema type (use string, number, integer, boolean, object, array, null)',
+      "/dependentRequired/kind: must be a list of strings",
+    ]);
+    expect(schemaProblems({ dependentRequired: ["kind"] })).toEqual([
+      "/dependentRequired: must be an object",
+    ]);
+  });
+
   it("makes resolveSchema refuse a malformed schema", () => {
     expect(() =>
       resolveSchema(

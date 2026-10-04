@@ -421,6 +421,48 @@ describe("single task", () => {
     expect(result.content[0].text).toContain("Error: boom");
   });
 
+  it("stops the child when the call is aborted", async () => {
+    // This child runs until it is killed, then exits the way a SIGTERM'd process does.
+    vi.mocked(spawn).mockImplementation((() => {
+      const proc = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: vi.fn(() => proc.emit("close", 143)),
+      });
+      return proc;
+    }) as any);
+    const controller = new AbortController();
+    const pending = loadTool().execute(
+      "call-1",
+      { task: "t" },
+      controller.signal,
+      undefined,
+    );
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalled());
+    controller.abort();
+    const result = await pending;
+
+    const proc = vi.mocked(spawn).mock.results[0].value;
+    expect(proc.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(result.structuredContent.results[0]).toMatchObject({
+      success: false,
+      error: "Exit code 143",
+    });
+  });
+
+  it("fails the call when the child cannot be started", async () => {
+    vi.mocked(spawn).mockImplementation((() => {
+      const proc = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: vi.fn(),
+      });
+      setTimeout(() => proc.emit("error", new Error("spawn pi ENOENT")), 5);
+      return proc;
+    }) as any);
+    await expect(run({ task: "t" })).rejects.toThrow("spawn pi ENOENT");
+  });
+
   it("rejects a call with neither task nor tasks", async () => {
     const result = await run({});
     expect(result.isError).toBe(true);
