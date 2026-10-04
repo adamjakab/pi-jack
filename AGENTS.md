@@ -36,6 +36,8 @@ How a child is started: the parent runs
   edit here.
 - **Vitest:** finds the installed version by itself, or uses `$PI_MODULES` if set.
 - **Formatting:** Prettier with default settings. Format the files you touch.
+- **Prompts:** `prompts/*.md` is declared by the `pi.prompts` entry in `package.json`, not by a `resources_discover`
+  handler, so users can filter prompts off in settings. Declaring both would load every template twice.
 
 ## Tooling
 
@@ -47,3 +49,23 @@ npm run test:e2e -- smoke    # one case or suite: npm run test:e2e -- jack-tool/
 npm run format:check
 npm run typecheck      # TypeScript, against the installed Pi release
 ```
+
+## Releasing
+
+Pushing a `v*` tag publishes to npm through `.github/workflows/release.yml`, which runs the checks first. Everything a
+release needs is therefore committed before the tag, in three steps:
+
+1. Move the `## [Unreleased]` section of `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, write the entries for what
+   changed, and leave an empty `## [Unreleased]` behind. Describe user-visible changes; skip internal refactors.
+2. Set `version` in `package.json` to the same `X.Y.Z`.
+3. Commit both, then tag and push: `git tag vX.Y.Z && git push && git push --tags`.
+
+Checklist before tagging:
+
+```bash
+npm test && npm run format:check && npm run typecheck && npm pack --dry-run
+```
+
+`npm pack --dry-run` is the one that matters: it lists exactly what would be published. `CHANGELOG.md` has to stay in
+the `files` array for this to include it. The tag must match `package.json`'s `version`, or npm refuses the publish.
+A version can only be published once, so a mistake means a new patch version.

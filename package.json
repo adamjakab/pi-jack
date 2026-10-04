@@ -25,7 +25,8 @@
     "contract.ts",
     "json-schema.ts",
     "agents/",
-    "prompts/"
+    "prompts/",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"
