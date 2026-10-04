@@ -18,22 +18,11 @@
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import {
-  defineTool,
-  type ExtensionAPI,
-  withFileMutationQueue,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import { Type, type TSchema } from "typebox";
-import {
-  type AgentConfig,
-  type AgentLoadError,
-  type AgentSource,
-  discoverAgents,
-} from "./agents.ts";
+import { type AgentSource, discoverAgents } from "./agents.ts";
 import { registerJsonSchema } from "./json-schema.ts";
 import {
   DEFAULT_SCHEMA,
@@ -46,6 +35,17 @@ import {
   type ThinkingLevel,
   schemaErrors,
 } from "./contract.ts";
+import {
+  describeAgent,
+  describeLoadErrors,
+  getFinalAssistantText,
+  getPiInvocation,
+  mapWithLimit,
+  normalizeTools,
+  shellQuote,
+  taskLabel,
+  writeTempFiles,
+} from "./utils.ts";
 
 export const MAX_PARALLEL = 2;
 
@@ -57,59 +57,6 @@ const THIS_EXTENSION = fileURLToPath(import.meta.url);
 
 /** Agent used when a call omits `agent`. */
 export const DEFAULT_AGENT = "worker";
-
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-
-  const execName = path.basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) {
-    return { command: process.execPath, args };
-  }
-
-  return { command: "pi", args };
-}
-
-/** Writes the child's schema and, when there is one, its system prompt into a fresh private temp dir. */
-async function writeTempFiles(
-  agentName: string,
-  schema: TSchema,
-  prompt: string,
-): Promise<{ dir: string; schemaPath: string; promptPath?: string }> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-jack-"));
-  const write = (filePath: string, text: string) =>
-    withFileMutationQueue(filePath, () =>
-      fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 }),
-    );
-
-  const schemaPath = path.join(dir, "schema.json");
-  await write(schemaPath, JSON.stringify(schema));
-  if (!prompt) return { dir, schemaPath };
-
-  const promptPath = path.join(
-    dir,
-    `prompt-${agentName.replace(/[^\w.-]+/g, "_")}.md`,
-  );
-  await write(promptPath, prompt);
-  return { dir, schemaPath, promptPath };
-}
-
-export function normalizeTools(value: unknown): string[] | undefined {
-  const raw = Array.isArray(value)
-    ? value
-    : typeof value === "string"
-      ? value.split(",")
-      : [];
-  const tools = raw
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => t.trim())
-    .filter(Boolean);
-  return tools.length > 0 ? tools : undefined;
-}
 
 interface SubagentUsage {
   turns: number;
@@ -163,9 +110,6 @@ export interface SubagentSetup {
   command: string[];
 }
 
-const shellQuote = (arg: string) =>
-  /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
-
 /** Renders a setup as indented lines, for the progress display and the result. */
 export function describeSetup(setup: SubagentSetup): string {
   const from = (source: string | undefined) =>
@@ -191,6 +135,7 @@ export function describeSetup(setup: SubagentSetup): string {
     .join("\n");
 }
 
+/** Builds the optional `thinking` parameter schema: one of THINKING_LEVELS, with the given description. */
 const thinkingSchema = (description: string) =>
   Type.Optional(
     Type.Union(
@@ -250,6 +195,7 @@ const outputSchema = Type.Object({
   ),
 });
 
+/** Returns a fresh usage record with every counter at zero. */
 const zeroUsage = (): SubagentUsage => ({
   turns: 0,
   input: 0,
@@ -259,6 +205,11 @@ const zeroUsage = (): SubagentUsage => ({
   cost: 0,
 });
 
+/**
+ * Runs one task in a child pi. Resolves its agent, system prompt, tools, model, thinking level, and schema from the
+ * call and the agent file, spawns the child, and turns its outcome into a result. Never throws for a task that fails;
+ * the failure is reported in the result's `error`.
+ */
 async function runSingleSubagent(
   taskText: string,
   agentNameInput: string | undefined,
@@ -283,6 +234,7 @@ async function runSingleSubagent(
   let schemaSource: unknown = schemaInput;
   let schemaBaseDir = process.cwd();
 
+  /** A result for a task that failed before any child was started. */
   const failure = (error: string): SingleResult => ({
     success: false,
     parsed: false,
@@ -416,6 +368,7 @@ async function runSingleSubagent(
 
     const usage = zeroUsage();
     const run = await runChild(args, usage, signal, onProgress);
+    /** A result for the finished child: successful when there is no `error`. */
     const result = (
       error: string | undefined,
       data: unknown = null,
@@ -508,6 +461,7 @@ async function runChild(
   let rejections = 0;
   let buffer = "";
 
+  /** Handles one JSON event from the child: counts usage, reports progress, and records answers and rejections. */
   const handleEvent = (event: any) => {
     if (event.type === "message_end" && event.message) {
       const msg = event.message as Message;
@@ -595,26 +549,6 @@ async function runChild(
   return run;
 }
 
-export async function mapWithLimit<TIn, TOut>(
-  items: TIn[],
-  concurrency: number,
-  fn: (item: TIn, index: number) => Promise<TOut>,
-): Promise<TOut[]> {
-  if (items.length === 0) return [];
-  const limit = Math.max(1, Math.min(concurrency, items.length));
-  const results: TOut[] = new Array(items.length);
-  let nextIndex = 0;
-  const workers = Array.from({ length: limit }).map(async () => {
-    while (true) {
-      const current = nextIndex++;
-      if (current >= items.length) return;
-      results[current] = await fn(items[current], current);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
 const jackTool = defineTool({
   name: "jack",
   label: "JACK",
@@ -697,6 +631,10 @@ const jackTool = defineTool({
   }),
   outputSchema,
 
+  /**
+   * Runs the call's task, or each of its `tasks` with missing fields taken from the top-level params, streaming
+   * per-task progress, and returns every subagent's answer to the model.
+   */
   async execute(_toolCallId, params, signal, onUpdate) {
     // Build normalized task list
     const taskItems: Array<{
@@ -771,6 +709,7 @@ const jackTool = defineTool({
     );
     const debug = params.debug_mode === true;
     const startedAt = Date.now();
+    /** Streams how many tasks are done and each task's current status, plus its setup with `debug_mode`. */
     const reportProgress = () => {
       const done = status.filter(
         (s) => s.startsWith("✓") || s.startsWith("✗"),
@@ -868,41 +807,10 @@ const jackTool = defineTool({
   },
 });
 
-export function taskLabel(task: string): string {
-  const firstLine = task.split("\n")[0];
-  return `${firstLine.slice(0, 60)}${firstLine.length > 60 || firstLine !== task ? "..." : ""}`;
-}
-
-export function getFinalAssistantText(messages: Message[]): string | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === "assistant") {
-      for (const part of msg.content) {
-        if (part.type === "text") return part.text;
-      }
-    }
-  }
-  return undefined;
-}
-
-function describeLoadErrors(errors: AgentLoadError[]): string {
-  return errors
-    .map(
-      (e) =>
-        `${e.file}${e.source === "built-in" ? " [built-in]" : ""} (${e.message})`,
-    )
-    .join("; ");
-}
-
-function describeAgent(agent: AgentConfig): string {
-  const origin = agent.overridesBuiltIn
-    ? " (yours, overrides built-in)"
-    : agent.source === "built-in"
-      ? " (built-in)"
-      : "";
-  return `- ${agent.name}${origin}: ${agent.description}`;
-}
-
+/**
+ * The extension's entry point: registers the `--json-schema` flag and its result tools, and the `jack` tool with the
+ * available agents listed in its description. Warns at session start about agent files that failed to load.
+ */
 export default function (pi: ExtensionAPI) {
   registerJsonSchema(pi);
   // The prompt templates in prompts/ are declared by the `pi.prompts` manifest entry instead of a

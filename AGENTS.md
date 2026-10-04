@@ -5,20 +5,21 @@ describes what it does for users.
 
 ## Layout
 
-| Path             | What it holds                                                                                                                 |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`       | Entry point: the `jack` tool. It resolves each task's agent and schema, spawns child `pi` processes, reads their JSON events. |
-| `json-schema.ts` | The `--json-schema` flag and the `jack_subagent_result` / `jack_subagent_fail` tools it registers.                            |
-| `contract.ts`    | Shared between both sides: tool and flag names, the default schema, schema loading and checking, validation, thinking levels. |
-| `agents.ts`      | Agent discovery: built-in `agents/` plus the user's `~/.pi/agent/agents/`.                                                    |
-| `agents/`        | Built-in agents. `worker` is the default.                                                                                     |
-| `prompts/`       | Prompt templates, offered to Pi through the `resources_discover` event.                                                       |
-| `scripts/`       | `pi-modules.mjs` resolves the installed Pi release and links it as `.pi-modules`, which `tsconfig.json` resolves against.     |
-| `tests/unit/`    | Vitest unit tests (`*.test.ts`).                                                                                              |
-| `tests/e2e/`     | End-to-end tests: `run.ts` is the runner, `harness.ts` the shared pi-spawning helpers, `cases/` the tests.                    |
+| Path                 | What it holds                                                                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`       | Entry point: the `jack` tool. It resolves each task's agent and schema, spawns child `pi` processes, reads their JSON events. |
+| `src/utils.ts`       | Stateless helpers for `index.ts`: launching pi, temp files, labels and descriptions, bounded concurrency.                     |
+| `src/json-schema.ts` | The `--json-schema` flag and the `jack_subagent_result` / `jack_subagent_fail` tools it registers.                            |
+| `src/contract.ts`    | Shared between both sides: tool and flag names, the default schema, schema loading and checking, validation, thinking levels. |
+| `src/agents.ts`      | Agent discovery: built-in `agents/` plus the user's `~/.pi/agent/agents/`.                                                    |
+| `agents/`            | Built-in agents. `worker` is the default.                                                                                     |
+| `prompts/`           | Prompt templates, offered to Pi through the `resources_discover` event.                                                       |
+| `scripts/`           | `pi-modules.mjs` resolves the installed Pi release and links it as `.pi-modules`, which `tsconfig.json` resolves against.     |
+| `tests/unit/`        | Vitest unit tests (`*.test.ts`).                                                                                              |
+| `tests/e2e/`         | End-to-end tests: `run.ts` is the runner, `harness.ts` the shared pi-spawning helpers, `cases/` the tests.                    |
 
 How a child is started: the parent runs
-`pi --mode json -p --no-session --exclude-tools jack --extension <index.ts> --json-schema <file> …`.
+`pi --mode json -p --no-session --exclude-tools jack --extension <src/index.ts> --json-schema <file> …`.
 
 - **Loading the extension:** Pi loads an extension path only once, so `--extension` does nothing where Pi already
   discovers JACK by itself.

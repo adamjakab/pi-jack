@@ -8,7 +8,7 @@ import {
   resolveSchema,
   schemaErrors,
   schemaProblems,
-} from "../../contract.ts";
+} from "../../src/contract.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-contract-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));

@@ -18,16 +18,13 @@
   "license": "MIT",
   "author": "Adam Jakab",
   "type": "module",
-  "main": "index.ts",
-  "exports": "./index.ts",
+  "main": "src/index.ts",
+  "exports": "./src/index.ts",
   "engines": {
     "node": ">=22.19.0"
   },
   "files": [
-    "index.ts",
-    "agents.ts",
-    "contract.ts",
-    "json-schema.ts",
+    "src/",
     "agents/",
     "prompts/",
     "CHANGELOG.md"
@@ -38,7 +35,7 @@
   "pi": {
     "image": "https://raw.githubusercontent.com/adamjakab/pi-jack/main/docs/logo.png",
     "extensions": [
-      "./index.ts"
+      "./src/index.ts"
     ],
     "prompts": [
       "./prompts/*.md"

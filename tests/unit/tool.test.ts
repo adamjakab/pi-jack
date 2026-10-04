@@ -28,8 +28,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 }));
 
 // Built-in agents come from <agentDir>/built-in, so tests control them like the user's agents.
-vi.mock("../../agents.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../agents.ts")>();
+vi.mock("../../src/agents.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/agents.ts")>();
   return {
     ...actual,
     discoverAgents: () => actual.discoverAgents(`${agentDir.current}/built-in`),
@@ -43,14 +43,14 @@ const {
   default: extension,
   MAX_PARALLEL,
   DEFAULT_AGENT,
-} = await import("../../index.ts");
+} = await import("../../src/index.ts");
 const {
   DEFAULT_SCHEMA,
   FAIL_TOOL,
   MAX_FORMAT_RETRIES,
   RESULT_TOOL,
   SCHEMA_FLAG,
-} = await import("../../contract.ts");
+} = await import("../../src/contract.ts");
 
 interface ChildScript {
   events?: object[];
@@ -151,7 +151,7 @@ function argAfter(flag: string, call = 0): string | undefined {
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 /** The extension entry point, which index.ts passes to children as `--extension`. */
-const THIS_EXTENSION = path.join(ROOT, "index.ts");
+const THIS_EXTENSION = path.join(ROOT, "src", "index.ts");
 
 /** Loads the extension into a fake pi; returns the jack tool and the flags it registered. */
 function loadExtension() {

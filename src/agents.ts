@@ -15,7 +15,7 @@ import {
 
 /** Folder of the agents that ship with this extension. */
 export const BUILT_IN_AGENTS_DIR = fileURLToPath(
-  new URL("./agents", import.meta.url),
+  new URL("../agents", import.meta.url),
 );
 
 /** Where an agent comes from: this extension, or the user's agents folder. */

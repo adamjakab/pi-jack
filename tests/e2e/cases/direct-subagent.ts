@@ -59,7 +59,7 @@ const directSubagent: Case = async () => {
       "--exclude-tools",
       "jack",
       "--extension",
-      path.join(ROOT, "index.ts"),
+      path.join(ROOT, "src", "index.ts"),
       "--json-schema",
       schemaPath,
       // `--tools` is a complete allowlist, so the result tools have to be named explicitly.
