@@ -38,7 +38,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "node tests/e2e/test-tool.ts",
+    "test:e2e": "node tests/e2e/run.ts",
     "typecheck": "node scripts/pi-modules.mjs && tsc -p tsconfig.json",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

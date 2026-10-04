@@ -15,7 +15,7 @@ describes what it does for users.
 | `prompts/`       | Prompt templates, offered to Pi through the `resources_discover` event.                                                       |
 | `scripts/`       | `pi-modules.mjs` resolves the installed Pi release and links it as `.pi-modules`, which `tsconfig.json` resolves against.     |
 | `tests/unit/`    | Vitest unit tests (`*.test.ts`).                                                                                              |
-| `tests/e2e/`     | End-to-end scripts that drive a real `pi` and model; run them by hand.                                                        |
+| `tests/e2e/`     | End-to-end tests: `run.ts` is the runner, `harness.ts` the shared pi-spawning helpers, `cases/` the tests.                    |
 
 How a child is started: the parent runs
 `pi --mode json -p --no-session --exclude-tools jack --extension <index.ts> --json-schema <file> …`.
@@ -42,7 +42,8 @@ How a child is started: the parent runs
 ```bash
 npm install            # dev tools only (Vitest, Prettier)
 npm test               # unit tests
-npm run test:e2e       # end-to-end script; needs a working pi and model
+npm run test:e2e             # end-to-end tests; needs a working pi and model
+npm run test:e2e -- smoke    # one case or suite: npm run test:e2e -- jack-tool/parallel
 npm run format:check
 npm run typecheck      # TypeScript, against the installed Pi release
 ```
