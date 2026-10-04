@@ -40,7 +40,5 @@ coverage/
 # Local pi state
 .pi/
 
-# Other
-_disabled/
 # Pi release link created by scripts/pi-modules.mjs
 .pi-modules
