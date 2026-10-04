@@ -1,13 +1,23 @@
 {
-  "name": "jack",
+  "name": "@adibacsi/pi-jack",
   "version": "1.0.0",
-  "private": true,
-  "description": "JACK (JSON Agent Contractor Kit): a Pi extension that delegates tasks to subagents answering in a JSON Schema, and adds a --json-schema flag for structured output from any pi run.",
+  "description": "JACK (JSON Agent Contractor Kit): Pi extension for delegating to subagents under a JSON Schema contract, for structured, reliable, and type-safe agent responses.",
   "keywords": [
     "pi-package"
   ],
+  "homepage": "https://github.com/adamjakab/pi-jack#readme",
+  "bugs": "https://github.com/adamjakab/pi-jack/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adamjakab/pi-jack.git"
+  },
+  "license": "MIT",
+  "author": "Adam Jakab",
   "type": "module",
   "main": "index.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": [
       "./index.ts"

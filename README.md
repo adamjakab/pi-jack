@@ -11,7 +11,9 @@ A [Pi](https://pi.dev) extension for getting structured answers from agents. It 
 ## Install
 
 ```bash
-pi install git:github.com/<you>/jack   # or: pi install /path/to/jack
+pi install npm:@adibacsi/pi-jack             # from npm
+pi install git:github.com/adamjakab/pi-jack   # from GitHub
+pi install /path/to/pi-jack                  # from a local checkout
 ```
 
 You can also put the folder, or a symlink to it, in `~/.pi/agent/extensions/`.
@@ -88,3 +90,7 @@ pi --mode json -p --json-schema '{"type":"object","properties":{"answer":{"type"
 ```
 
 The answer is `result.details` of the last successful `tool_execution_end` event for `jack_subagent_result`.
+
+## License
+
+[MIT](LICENSE)
