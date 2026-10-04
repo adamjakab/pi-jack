@@ -19,6 +19,10 @@
   "author": "Adam Jakab",
   "type": "module",
   "main": "index.ts",
+  "exports": "./index.ts",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "files": [
     "index.ts",
     "agents.ts",
@@ -42,7 +46,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "node tests/e2e/test-tool.ts",
+    "test:e2e": "node tests/e2e/run.ts",
+    "typecheck": "node scripts/pi-modules.mjs && tsc -p tsconfig.json",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -63,7 +68,9 @@
     }
   },
   "devDependencies": {
+    "@types/node": "^26.6.4",
     "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.3"
   }
 }
