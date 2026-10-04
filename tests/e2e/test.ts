@@ -4,10 +4,12 @@
 import { spawn } from "node:child_process";
 
 const args = [
-  "--mode", "json",
+  "--mode",
+  "json",
   "-p",
   "--no-session",
-  "--exclude-tools", "jack",
+  "--exclude-tools",
+  "jack",
   "say hello",
 ];
 
@@ -20,8 +22,12 @@ const proc = spawn("pi", args, {
 let stdout = "";
 let stderr = "";
 
-proc.stdout.on("data", (d) => { stdout += d.toString(); });
-proc.stderr.on("data", (d) => { stderr += d.toString(); });
+proc.stdout.on("data", (d) => {
+  stdout += d.toString();
+});
+proc.stderr.on("data", (d) => {
+  stderr += d.toString();
+});
 
 proc.on("close", (code) => {
   console.log("Exit code:", code);
@@ -36,11 +42,14 @@ proc.on("close", (code) => {
       if (ev.type === "message_end" && ev.message?.role === "assistant") {
         lastMsg = ev.message;
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   if (lastMsg) {
-    const text = lastMsg.content?.find((c: any) => c.type === "text")?.text ?? "(no text)";
+    const text =
+      lastMsg.content?.find((c: any) => c.type === "text")?.text ?? "(no text)";
     console.log("Assistant said:", text);
     console.log("SUCCESS");
   } else {

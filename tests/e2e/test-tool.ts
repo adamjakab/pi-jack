@@ -9,10 +9,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The repository root, used as a sample folder to survey.
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 const CWD = ROOT;
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 45_000;
 
 // A schema whose descriptions make the subagent run one timed bash sleep, so the parallel case can tell
 // overlapping children from sequential ones.

@@ -4,7 +4,7 @@ import {
   mapWithLimit,
   normalizeTools,
   taskLabel,
-} from "../index.ts";
+} from "../../index.ts";
 
 describe("normalizeTools", () => {
   it("splits and trims a comma-separated string", () => {

@@ -11,7 +11,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 }));
 
 const { BUILT_IN_AGENTS_DIR, discoverAgents: discoverWith } =
-  await import("../agents.ts");
+  await import("../../agents.ts");
 
 // The user's agents live in <agentDir>/agents; tests use their own built-in folder unless they say otherwise.
 const builtInDir = () => path.join(agentDir.current, "built-in");

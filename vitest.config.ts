@@ -36,6 +36,6 @@ export default defineConfig({
     ],
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/unit/**/*.test.ts"],
   },
 });

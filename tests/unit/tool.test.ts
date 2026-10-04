@@ -27,8 +27,8 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 }));
 
 // Built-in agents come from <agentDir>/built-in, so tests control them like the user's agents.
-vi.mock("../agents.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../agents.ts")>();
+vi.mock("../../agents.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents.ts")>();
   return {
     ...actual,
     discoverAgents: () => actual.discoverAgents(`${agentDir.current}/built-in`),
@@ -42,14 +42,14 @@ const {
   default: extension,
   MAX_PARALLEL,
   DEFAULT_AGENT,
-} = await import("../index.ts");
+} = await import("../../index.ts");
 const {
   DEFAULT_SCHEMA,
   FAIL_TOOL,
   MAX_FORMAT_RETRIES,
   RESULT_TOOL,
   SCHEMA_FLAG,
-} = await import("../contract.ts");
+} = await import("../../contract.ts");
 
 interface ChildScript {
   events?: object[];

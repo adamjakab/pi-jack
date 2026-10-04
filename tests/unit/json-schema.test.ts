@@ -7,13 +7,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { registerJsonSchema } from "../json-schema.ts";
+import { registerJsonSchema } from "../../json-schema.ts";
 import {
   FAIL_TOOL,
   MAX_FORMAT_RETRIES,
   RESULT_TOOL,
   SCHEMA_FLAG,
-} from "../contract.ts";
+} from "../../contract.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "jack-json-schema-test-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));

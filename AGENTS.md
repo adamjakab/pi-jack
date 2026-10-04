@@ -13,7 +13,8 @@ describes what it does for users.
 | `agents.ts`      | Agent discovery: built-in `agents/` plus the user's `~/.pi/agent/agents/`.                                                    |
 | `agents/`        | Built-in agents. `worker` is the default.                                                                                     |
 | `prompts/`       | Prompt templates, offered to Pi through the `resources_discover` event.                                                       |
-| `tests/`         | `*.test.ts` are Vitest unit tests. `test-*.ts` are end-to-end scripts that drive a real `pi` and model; run them by hand.     |
+| `tests/unit/`    | Vitest unit tests (`*.test.ts`).                                                                                              |
+| `tests/e2e/`     | End-to-end scripts that drive a real `pi` and model; run them by hand.                                                        |
 
 How a child is started: the parent runs
 `pi --mode json -p --no-session --exclude-tools jack --extension <index.ts> --json-schema <file> …`.
