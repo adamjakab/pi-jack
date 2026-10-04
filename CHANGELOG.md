@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 Nothing yet.
 
+## [1.0.4] - 2026-10-04
+
+### Changed
+
+- The extension's source files moved into `src/`, and the package's `main`, `exports` and `pi.extensions` point at
+  `src/index.ts`. Pi picks up the new location by itself; nothing changes for an installed package.
+
 ## [1.0.3] - 2026-10-04
 
 ### Changed
