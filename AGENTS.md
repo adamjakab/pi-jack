@@ -52,8 +52,9 @@ npm run typecheck      # TypeScript, against the installed Pi release
 
 ## Releasing
 
-Pushing a `v*` tag publishes to npm through `.github/workflows/release.yml`, which runs the checks first. Everything a
-release needs is therefore committed before the tag, in three steps:
+Pushing a `vX.Y.Z` tag publishes to npm through `.github/workflows/release.yml`, which runs the checks first. The tag
+filter is `v*.*.*` so that unrelated tags such as `validation` do not start a release. Everything a release needs is
+therefore committed before the tag, in three steps:
 
 1. Move the `## [Unreleased]` section of `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, write the entries for what
    changed, and leave an empty `## [Unreleased]` behind. Describe user-visible changes; skip internal refactors.
@@ -67,5 +68,5 @@ npm test && npm run format:check && npm run typecheck && npm pack --dry-run
 ```
 
 `npm pack --dry-run` is the one that matters: it lists exactly what would be published. `CHANGELOG.md` has to stay in
-the `files` array for this to include it. The tag must match `package.json`'s `version`, or npm refuses the publish.
-A version can only be published once, so a mistake means a new patch version.
+the `files` array for this to include it. The tag must be `v` plus the exact `package.json` `version`, or the run fails
+and nothing is published. A version can only be published once, so a mistake means a new patch version.

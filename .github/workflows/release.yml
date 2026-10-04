@@ -7,7 +7,10 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      # A release tag is exactly vX.Y.Z. The `.*.*` matters: `v*` alone would also fire on tags like
+      # `validation`, which have nothing to do with releasing. This is a glob, not a regex, so it cannot demand
+      # digits; anything else with two dots still starts a run and is stopped by the version check in verify.
+      - "v*.*.*"
 
 permissions:
   contents: read
@@ -49,7 +52,7 @@ jobs:
         run: |
           version=$(node -p "require('./package.json').version")
           if [ "${{ github.ref_name }}" != "v$version" ]; then
-            echo "::error::Tag ${{ github.ref_name }} does not match package.json version $version"
+            echo "::error::${{ github.ref_name }} is not a release tag for version $version. Only vX.Y.Z, matching package.json, publishes."
             exit 1
           fi
 
