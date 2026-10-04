@@ -8,7 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 Nothing yet.
 
-## [1.0.0] - 2025-10-04
+## [1.0.1] - 2026-10-04
+
+### Changed
+
+- Releases are published from GitHub Actions through npm trusted publishing, so each version on npm carries a
+  provenance attestation linking it to the commit and workflow that built it.
+
+## [1.0.0] - 2026-10-04
 
 First release.
 
