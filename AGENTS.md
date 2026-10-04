@@ -53,8 +53,10 @@ npm run typecheck      # TypeScript, against the installed Pi release
 ## Releasing
 
 Pushing a `vX.Y.Z` tag publishes to npm through `.github/workflows/release.yml`, which runs the checks first. The tag
-filter is `v*.*.*` so that unrelated tags such as `validation` do not start a release. Everything a release needs is
-therefore committed before the tag, in three steps:
+filter is `v*.*.*` so that unrelated tags such as `validation` do not start a release. It authenticates with npm
+trusted publishing (OIDC), so there is no npm token to keep or rotate.
+
+Everything a release needs is committed before the tag, in three steps:
 
 1. Move the `## [Unreleased]` section of `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, write the entries for what
    changed, and leave an empty `## [Unreleased]` behind. Describe user-visible changes; skip internal refactors.

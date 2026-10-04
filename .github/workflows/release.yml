@@ -67,7 +67,9 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
-      # Required by `npm publish --provenance`.
+      # npm trusted publishing: the job proves it is this repo's release.yml through OIDC, so there is no npm token.
+      # The trusted publisher is configured on the package's settings page on npmjs.com. Provenance is added
+      # automatically.
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -77,8 +79,11 @@ jobs:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing needs npm 11.5.1 or later, newer than the npm that ships with the Node in .nvmrc. Node
+      # itself stays on the supported floor, which is what verify tests against.
+      - run: npm install -g npm@latest
+
       - run: npm ci
 
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Access is public through publishConfig in package.json.
+      - run: npm publish
