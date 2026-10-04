@@ -89,7 +89,7 @@ interface RanWith {
 }
 
 /** How a subagent was set up once defaults and overrides were applied; shown by `debug_mode`. */
-export interface SubagentSetup {
+interface SubagentSetup {
   agent: string;
   /** Where the agent file came from; undefined for a bare pi agent (no default agent file). */
   agentSource?: AgentSource;
@@ -111,7 +111,7 @@ export interface SubagentSetup {
 }
 
 /** Renders a setup as indented lines, for the progress display and the result. */
-export function describeSetup(setup: SubagentSetup): string {
+function describeSetup(setup: SubagentSetup): string {
   const from = (source: string | undefined) =>
     source ? ` (from the ${source})` : "";
   const agent = !setup.agentSource
@@ -682,14 +682,7 @@ const jackTool = defineTool({
               task: "",
               error: "Either `task` or `tasks` must be provided.",
               attempts: 0,
-              usage: {
-                turns: 0,
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                cost: 0,
-              },
+              usage: zeroUsage(),
             },
           ],
         } as any,

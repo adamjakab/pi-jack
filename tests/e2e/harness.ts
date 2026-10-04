@@ -193,8 +193,8 @@ export function checkProcess(
     run.code === 0,
     `pi exited with code ${run.code}${run.signal ? ` (signal ${run.signal})` : ""}`,
   );
-  const noise = options.allowStderr
-    ? run.stderr.replace(options.allowStderr, "").trim()
+  const noise = allowStderr
+    ? run.stderr.replace(allowStderr, "").trim()
     : run.stderr.trim();
   check(failures, noise === "", `pi wrote to stderr:\n${noise}`);
 }
