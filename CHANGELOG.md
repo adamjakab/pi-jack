@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 Nothing yet.
 
+## [1.0.2] - 2026-10-04
+
+### Added
+
+- A preview image for the [Pi package gallery](https://pi.dev/packages), set through `pi.image`.
+
 ## [1.0.1] - 2026-10-04
 
 ### Changed
