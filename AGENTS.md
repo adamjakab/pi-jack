@@ -15,7 +15,7 @@ describes what it does for users.
 | `agents/`            | Built-in agents. `worker` is the default.                                                                                     |
 | `prompts/`           | Prompt templates, offered to Pi through the `resources_discover` event.                                                       |
 | `scripts/`           | `pi-modules.mjs` resolves the installed Pi release and links it as `.pi-modules`, which `tsconfig.json` resolves against.     |
-| `tests/unit/`        | Vitest unit tests (`*.test.ts`).                                                                                              |
+| `tests/unit/`        | Vitest unit tests: `<name>.test.ts` holds the tests for `src/<name>.ts`.                                                      |
 | `tests/e2e/`         | End-to-end tests: `run.ts` is the runner, `harness.ts` the shared pi-spawning helpers, `cases/` the tests.                    |
 
 How a child is started: the parent runs
@@ -45,6 +45,7 @@ How a child is started: the parent runs
 ```bash
 npm install            # dev tools only (Vitest, Prettier)
 npm test               # unit tests
+npm run coverage       # unit tests with coverage of src/; the HTML report goes to coverage/
 npm run test:e2e             # end-to-end tests; needs a working pi and model
 npm run test:e2e -- smoke    # one case or suite: npm run test:e2e -- jack-tool/parallel
 npm run format:check
