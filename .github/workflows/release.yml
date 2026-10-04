@@ -1,0 +1,81 @@
+# Publishing is triggered by a version tag, never by a push to a branch.
+#
+# Everything a release needs must therefore be committed before the tag exists: the version bump and the CHANGELOG
+# entry (see "Releasing" in AGENTS.md). This workflow only verifies and publishes; it does not create a release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # Same checks as locally, before anything is published. End-to-end tests are deliberately absent: they need a
+    # model and cost money, so they stay a local step.
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # Pi's packages are host-provided and never installed here, but CI has no Pi installation to point at. Install
+      # them into their own prefix and hand that folder to the type checker and Vitest through $PI_MODULES, which
+      # scripts/pi-modules.mjs and vitest.config.ts both prefer over the local release.
+      - name: Install Pi's packages
+        run: npm install --prefix "$RUNNER_TEMP/pi-modules" @earendil-works/pi-coding-agent@"${{ vars.PI_VERSION || '1.0.2' }}"
+
+      - name: Type check
+        run: npm run typecheck
+        env:
+          PI_MODULES: ${{ runner.temp }}/pi-modules/node_modules
+
+      - run: npm test
+        env:
+          PI_MODULES: ${{ runner.temp }}/pi-modules/node_modules
+
+      - run: npm run format:check
+
+      - name: Check that the tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "${{ github.ref_name }}" != "v$version" ]; then
+            echo "::error::Tag ${{ github.ref_name }} does not match package.json version $version"
+            exit 1
+          fi
+
+      - name: Check what would be published
+        run: npm pack --dry-run
+
+  publish:
+    name: Publish to npm
+    needs: verify
+    runs-on: ubuntu-latest
+    # A version cannot be republished, so a re-run of an old tag must not try.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      # Required by `npm publish --provenance`.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
