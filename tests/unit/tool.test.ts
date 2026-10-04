@@ -8,6 +8,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Value } from "typebox/value";
 import {
   afterAll,
@@ -146,6 +147,12 @@ function argAfter(flag: string, call = 0): string | undefined {
   return args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 }
 
+/** Repository root, for the files the package manifest points at. */
+const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
+
+/** The extension entry point, which index.ts passes to children as `--extension`. */
+const THIS_EXTENSION = path.join(ROOT, "index.ts");
+
 /** Loads the extension into a fake pi; returns the jack tool and the flags it registered. */
 function loadExtension() {
   let tool: any;
@@ -196,10 +203,18 @@ describe("registration", () => {
     expect(SCHEMA_FLAG).toBe("json-schema");
   });
 
-  it("offers its own prompt templates", () => {
-    const { promptPaths } = loadExtension().handlers.resources_discover();
-    expect(promptPaths).toHaveLength(1);
-    expect(fs.existsSync(path.join(promptPaths[0], "jack-demo.md"))).toBe(true);
+  it("declares its prompt templates in the package manifest, not at runtime", () => {
+    // Declaring them in `pi.prompts` is what lets users switch them off with `"prompts": []` in settings. Doing it
+    // here as well would load every template twice: Pi dedupes prompts by name, not by path.
+    expect(loadExtension().handlers.resources_discover).toBeUndefined();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
+    );
+    expect(manifest.pi.prompts).toEqual(["./prompts/*.md"]);
+    expect(fs.existsSync(path.join(ROOT, "prompts", "jack-demo.md"))).toBe(
+      true,
+    );
   });
 
   it("lists discovered agents in the tool description", () => {
@@ -246,7 +261,7 @@ describe("single task", () => {
       expect.arrayContaining(["--mode", "json", "-p", "--no-session"]),
     );
     expect(argAfter("--exclude-tools")).toBe("jack");
-    expect(argAfter("--extension")).toMatch(/jack\/index\.ts$/);
+    expect(argAfter("--extension")).toBe(THIS_EXTENSION);
     expect(argAfter("--model")).toBe("m1");
     expect(args).not.toContain("--tools");
     expect(args.at(-1)).toBe("t");
