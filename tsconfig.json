@@ -7,15 +7,11 @@
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
-    "typeRoots": [
-      "/home/jackisback/.pi/agent/install/releases/1.0.0/node_modules/@types"
-    ],
     "types": ["node"],
     "paths": {
-      "typebox/value": [
-        "/home/jackisback/.pi/agent/install/releases/1.0.0/node_modules/typebox/build/value/index.d.mts"
-      ],
-      "*": ["/home/jackisback/.pi/agent/install/releases/1.0.0/node_modules/*"]
+      "typebox/value": ["./.pi-modules/typebox/build/value/index.d.mts"],
+      "@earendil-works/*": ["./.pi-modules/@earendil-works/*"],
+      "*": ["./.pi-modules/*"]
     }
   },
   "include": ["*.ts", "tests/**/*.ts"]

@@ -13,6 +13,7 @@ describes what it does for users.
 | `agents.ts`      | Agent discovery: built-in `agents/` plus the user's `~/.pi/agent/agents/`.                                                    |
 | `agents/`        | Built-in agents. `worker` is the default.                                                                                     |
 | `prompts/`       | Prompt templates, offered to Pi through the `resources_discover` event.                                                       |
+| `scripts/`       | `pi-modules.mjs` resolves the installed Pi release and links it as `.pi-modules`, which `tsconfig.json` resolves against.     |
 | `tests/unit/`    | Vitest unit tests (`*.test.ts`).                                                                                              |
 | `tests/e2e/`     | End-to-end scripts that drive a real `pi` and model; run them by hand.                                                        |
 
@@ -30,8 +31,9 @@ How a child is started: the parent runs
 - **Runtime:** TypeScript, run directly by Pi, as ESM.
 - **Pi's packages:** `@earendil-works/pi-*` and `typebox` are provided by Pi. They are listed as optional
   `peerDependencies` and are never installed here.
-- **`tsconfig.json`:** points at Pi's release folder (`~/.pi/agent/install/releases/<version>/node_modules`). After a
-  Pi update, change the version there.
+- **`tsconfig.json`:** resolves Pi's packages through the `.pi-modules` symlink, which `scripts/pi-modules.mjs`
+  creates from `$PI_MODULES` or the installed release. Run `npm run typecheck`; it relinks first, so a Pi update needs no
+  edit here.
 - **Vitest:** finds the installed version by itself, or uses `$PI_MODULES` if set.
 - **Formatting:** Prettier with default settings. Format the files you touch.
 
@@ -42,5 +44,5 @@ npm install            # dev tools only (Vitest, Prettier)
 npm test               # unit tests
 npm run test:e2e       # end-to-end script; needs a working pi and model
 npm run format:check
-npx -y -p typescript tsc -p tsconfig.json   # type check
+npm run typecheck      # TypeScript, against the installed Pi release
 ```
