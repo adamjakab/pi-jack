@@ -53,9 +53,11 @@ const {
 } = await import("../../src/contract.ts");
 
 interface ChildScript {
-  events?: object[];
+  /** JSON events, written one per line; a string is written as is. */
+  events?: (object | string)[];
   stderr?: string;
-  exitCode?: number;
+  /** Null is how a child killed by a signal exits. */
+  exitCode?: number | null;
 }
 
 const usage = {
@@ -130,9 +132,14 @@ function scriptChildren(...scripts: ChildScript[]) {
     });
     setTimeout(() => {
       for (const event of script.events ?? [])
-        proc.stdout.emit("data", Buffer.from(`${JSON.stringify(event)}\n`));
+        proc.stdout.emit(
+          "data",
+          Buffer.from(
+            `${typeof event === "string" ? event : JSON.stringify(event)}\n`,
+          ),
+        );
       if (script.stderr) proc.stderr.emit("data", Buffer.from(script.stderr));
-      proc.emit("close", script.exitCode ?? 0);
+      proc.emit("close", script.exitCode === undefined ? 0 : script.exitCode);
     }, 5);
     return proc;
   }) as any);
@@ -467,6 +474,94 @@ describe("single task", () => {
     const result = await run({});
     expect(result.isError).toBe(true);
     expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe("child events", () => {
+  it("counts usage fields a turn leaves out as zero, and only counts assistant turns", async () => {
+    scriptChildren({
+      events: [
+        { type: "message_end", message: { role: "user", content: [] } },
+        { type: "message_end", message: { role: "assistant", content: [] } },
+        {
+          type: "message_end",
+          message: { role: "assistant", content: [], usage: { cost: {} } },
+        },
+        answered(okAnswer),
+      ],
+    });
+    const result = await run({ task: "t" });
+
+    expect(result.structuredContent.results[0].usage).toEqual({
+      turns: 2,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+    });
+  });
+
+  it("shows the tool the child is running, with the first line of its command or path", async () => {
+    scriptChildren({
+      events: [
+        {
+          type: "tool_execution_start",
+          toolName: "bash",
+          args: { command: "ls\necho hi" },
+        },
+        {
+          type: "tool_execution_start",
+          toolName: "read",
+          args: { path: "a.txt" },
+        },
+        { type: "tool_execution_start", toolName: "grep" },
+        answered(okAnswer),
+      ],
+    });
+    const updates: string[] = [];
+    await loadTool().execute("call-1", { task: "t" }, undefined, (u: any) =>
+      updates.push(u.content[0].text),
+    );
+
+    for (const status of ["bash ls", "read a.txt", "grep"])
+      expect(updates.some((u) => u.endsWith(`[1] t — turn 1: ${status}`))).toBe(
+        true,
+      );
+  });
+
+  it("falls back to a default message when a rejection or a give-up has no text", async () => {
+    scriptChildren(
+      { events: [{ ...rejected(""), result: {} }] },
+      { events: [{ ...gaveUp(""), result: {} }] },
+    );
+    expect((await run({ task: "t" })).structuredContent.results[0].error).toBe(
+      "No valid answer after 1 attempts. The answer was rejected.",
+    );
+    expect((await run({ task: "t" })).structuredContent.results[0].error).toBe(
+      "The subagent gave up without a reason.",
+    );
+  });
+
+  it("skips blank lines, non-JSON lines, and events it doesn't use", async () => {
+    scriptChildren({
+      events: [
+        "",
+        "not json",
+        { type: "tool_execution_end", toolName: "bash", isError: false },
+        answered(okAnswer),
+      ],
+    });
+    expect(
+      (await run({ task: "t" })).structuredContent.results[0],
+    ).toMatchObject({ success: true, data: okAnswer });
+  });
+
+  it("fails a child killed by a signal, which exits without a code", async () => {
+    scriptChildren({ exitCode: null });
+    expect(
+      (await run({ task: "t" })).structuredContent.results[0],
+    ).toMatchObject({ success: false, error: "Exit code 1" });
   });
 });
 

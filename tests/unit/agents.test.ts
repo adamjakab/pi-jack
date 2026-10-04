@@ -72,6 +72,34 @@ describe("discoverAgents", () => {
     });
   });
 
+  it("reads tools written as a YAML list, and treats a blank schema as none", () => {
+    writeAgent(
+      "a.md",
+      "---\nname: a\ndescription: d\ntools:\n  - read\n  - bash\nschema: '  '\n---\nbody\n",
+    );
+    expect(discoverAgents().agents[0]).toMatchObject({
+      tools: ["read", "bash"],
+      schema: undefined,
+    });
+  });
+
+  it("skips a folder whose name ends in .md", () => {
+    fs.mkdirSync(path.join(agentDir.current, "agents", "folder.md"));
+    expect(discoverAgents()).toEqual({ agents: [], errors: [] });
+  });
+
+  it("reports an agents path that cannot be read as a folder", () => {
+    const notAFolder = path.join(agentDir.current, "built-in.txt");
+    fs.writeFileSync(notAFolder, "");
+    expect(discoverWith(notAFolder).errors).toEqual([
+      {
+        file: notAFolder,
+        source: "built-in",
+        message: expect.stringMatching(/^ENOTDIR/),
+      },
+    ]);
+  });
+
   it("reads a thinking level, and reports one that isn't offered", () => {
     writeAgent(
       "deep.md",

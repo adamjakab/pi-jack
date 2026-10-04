@@ -34,25 +34,44 @@ const schema = {
 const schemaFile = path.join(tmp, "schema.json");
 fs.writeFileSync(schemaFile, JSON.stringify(schema));
 
+interface FakePiOptions {
+  /** Whether registering a tool also makes it active. */
+  activateOnRegister?: boolean;
+  /** Tools that never become active, as with pi's `--exclude-tools`. */
+  excluded?: string[];
+  /** Whether the session has a UI to show notifications in. */
+  hasUI?: boolean;
+}
+
 /** Loads json-schema.ts into a fake pi with the given flag value and starts a session. */
-function startChild(flag: string | undefined, initialTools = ["read"]) {
+function startChild(
+  flag: string | undefined,
+  {
+    activateOnRegister = true,
+    excluded = [],
+    hasUI = false,
+  }: FakePiOptions = {},
+) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, (event: any, ctx: any) => any>();
-  let active = [...initialTools];
+  const allowed = (names: string[]) =>
+    names.filter((n) => !excluded.includes(n));
+  let active = ["read"];
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const pi = {
     registerFlag: () => {},
     getFlag: (name: string) => (name === SCHEMA_FLAG ? flag : undefined),
     registerTool: (tool: any) => {
       tools.set(tool.name, tool);
-      active.push(tool.name);
+      if (activateOnRegister) active = allowed([...active, tool.name]);
     },
     getActiveTools: () => active,
-    setActiveTools: (names: string[]) => (active = names),
+    setActiveTools: (names: string[]) => (active = allowed(names)),
     on: (event: string, handler: any) => handlers.set(event, handler),
   };
   registerJsonSchema(pi as any);
-  const ctx = { cwd: tmp, hasUI: false };
+  const notify = vi.fn();
+  const ctx = { cwd: tmp, hasUI, ui: { notify } };
   handlers.get("session_start")!({}, ctx);
   handlers.get("before_agent_start")?.({}, ctx);
   const logged = errors.mock.calls.map(([message]) => String(message));
@@ -60,6 +79,7 @@ function startChild(flag: string | undefined, initialTools = ["read"]) {
   return {
     tools,
     logged,
+    notify,
     active: () => active,
     settle: () => handlers.get("agent_before_settle")!({}, ctx),
     call: (name: string, params: unknown) =>
@@ -138,5 +158,23 @@ describe("--json-schema", () => {
         /^\[jack\] Could not load the schema: .*missing\.json/,
       ),
     ]);
+  });
+
+  it("activates the result tools when registering them leaves them inactive", () => {
+    const child = startChild(schemaFile, { activateOnRegister: false });
+    expect(child.active()).toEqual(["read", RESULT_TOOL, FAIL_TOOL]);
+    expect(child.logged).toEqual([]);
+  });
+
+  it("reports a result tool that was excluded from the tool list, in the UI as well when there is one", () => {
+    const child = startChild(schemaFile, {
+      excluded: [RESULT_TOOL],
+      hasUI: true,
+    });
+    const message = `[jack] The ${RESULT_TOOL} tool is not available; it must not be excluded from the tool list.`;
+    expect(child.logged).toEqual([message]);
+    expect(child.notify).toHaveBeenCalledWith(message, "error");
+    // Without the result tool there is nothing to nudge the agent toward.
+    expect(child.settle()).toBeUndefined();
   });
 });

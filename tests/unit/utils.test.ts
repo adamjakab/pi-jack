@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
+  describeAgent,
+  describeLoadErrors,
   getFinalAssistantText,
+  getPiInvocation,
   mapWithLimit,
   normalizeTools,
   taskLabel,
@@ -70,6 +73,11 @@ describe("getFinalAssistantText", () => {
     );
   });
 
+  it("looks past messages from other roles", () => {
+    const user = { role: "user", content: [] } as any;
+    expect(getFinalAssistantText([assistant("answer"), user])).toBe("answer");
+  });
+
   it("returns undefined when there is no assistant text", () => {
     expect(getFinalAssistantText([])).toBeUndefined();
   });
@@ -109,5 +117,66 @@ describe("mapWithLimit", () => {
 
   it("returns an empty array for no items", async () => {
     expect(await mapWithLimit([], 4, async () => 1)).toEqual([]);
+  });
+});
+
+describe("getPiInvocation", () => {
+  const { argv, execPath } = process;
+  afterEach(() => {
+    process.argv = argv;
+    process.execPath = execPath;
+  });
+
+  it("reruns the current script when pi runs as a script on disk", () => {
+    process.argv = [execPath, import.meta.filename];
+    expect(getPiInvocation(["-p"])).toEqual({
+      command: execPath,
+      args: [import.meta.filename, "-p"],
+    });
+  });
+
+  it("runs this executable when pi is a compiled binary", () => {
+    process.argv = ["/usr/local/bin/pi", "/$bunfs/root/pi"];
+    process.execPath = "/usr/local/bin/pi";
+    expect(getPiInvocation(["-p"])).toEqual({
+      command: "/usr/local/bin/pi",
+      args: ["-p"],
+    });
+  });
+
+  it("falls back to pi on the PATH under a generic runtime", () => {
+    process.argv = ["/usr/bin/node"];
+    process.execPath = "/usr/bin/node";
+    expect(getPiInvocation(["-p"])).toEqual({ command: "pi", args: ["-p"] });
+  });
+});
+
+describe("describeLoadErrors", () => {
+  it("lists each file with its error, marking built-in ones", () => {
+    expect(
+      describeLoadErrors([
+        { file: "a.md", source: "user", message: "bad yaml" },
+        { file: "b.md", source: "built-in", message: "no name" },
+      ]),
+    ).toBe("a.md (bad yaml); b.md [built-in] (no name)");
+  });
+});
+
+describe("describeAgent", () => {
+  const agent = {
+    name: "a",
+    description: "Does a",
+    dir: "/x",
+    systemPrompt: "",
+  };
+
+  it("marks where the agent comes from", () => {
+    expect(describeAgent({ ...agent, source: "user" })).toBe("- a: Does a");
+    expect(describeAgent({ ...agent, source: "built-in" })).toBe(
+      "- a (built-in): Does a",
+    );
+    expect(
+      describeAgent({ ...agent, source: "user", overridesBuiltIn: true }),
+    ).toBe("- a (yours, overrides built-in): Does a");
   });
 });

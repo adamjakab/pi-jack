@@ -209,6 +209,25 @@ describe("schemaProblems", () => {
     ]);
   });
 
+  it("reports a malformed root, type list, pattern, multipleOf or properties", () => {
+    expect(schemaProblems("object")).toEqual(["/: a schema must be an object"]);
+    expect(
+      schemaProblems({
+        type: [],
+        properties: {
+          code: { type: "string", pattern: 5 },
+          n: { type: "number", multipleOf: 0 },
+          nested: { type: "object", properties: [] },
+        },
+      }),
+    ).toEqual([
+      "/type: must name at least one type",
+      "/properties/code/pattern: must be a string",
+      "/properties/n/multipleOf: must be a positive number",
+      "/properties/nested/properties: must be an object",
+    ]);
+  });
+
   it("makes resolveSchema refuse a malformed schema", () => {
     expect(() =>
       resolveSchema(
