@@ -6,7 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+## [1.0.5] - 2026-10-05
+
+### Changed
+
+- The `pi.prompts` entry is gone from the package manifest; Pi finds the `prompts/` directory by convention.
 
 ## [1.0.4] - 2026-10-04
 

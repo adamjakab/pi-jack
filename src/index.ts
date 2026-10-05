@@ -806,10 +806,9 @@ const jackTool = defineTool({
  */
 export default function (pi: ExtensionAPI) {
   registerJsonSchema(pi);
-  // The prompt templates in prompts/ are declared by the `pi.prompts` manifest entry instead of a
-  // `resources_discover` handler: declaring them lets users filter them off with `"prompts": []` in settings, which
-  // cannot reach an extension-declared path. Declaring both would load every template twice, since Pi dedupes
-  // prompts by name, not by path.
+  // The prompt templates in prompts/ are found by Pi through the conventional directory, so neither a `pi.prompts`
+  // manifest entry nor a `resources_discover` handler declares them. Declaring them as well would load every template
+  // twice, since Pi dedupes prompts by name, not by path.
 
   // List the agents known at load time so the model never has to guess a name.
   const { agents, errors } = discoverAgents();

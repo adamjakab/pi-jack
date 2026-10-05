@@ -210,15 +210,14 @@ describe("registration", () => {
     expect(SCHEMA_FLAG).toBe("json-schema");
   });
 
-  it("declares its prompt templates in the package manifest, not at runtime", () => {
-    // Declaring them in `pi.prompts` is what lets users switch them off with `"prompts": []` in settings. Doing it
-    // here as well would load every template twice: Pi dedupes prompts by name, not by path.
+  it("leaves its prompt templates to Pi's directory discovery, declaring them neither in the manifest nor at runtime", () => {
+    // Declaring them as well would load every template twice: Pi dedupes prompts by name, not by path.
     expect(loadExtension().handlers.resources_discover).toBeUndefined();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
     );
-    expect(manifest.pi.prompts).toEqual(["./prompts/*.md"]);
+    expect(manifest.pi.prompts).toBeUndefined();
     expect(fs.existsSync(path.join(ROOT, "prompts", "jack-demo.md"))).toBe(
       true,
     );

@@ -1,6 +1,6 @@
 {
   "name": "@adibacsi/pi-jack",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "JACK (JSON Agent Contractor Kit): Pi extension for delegating to subagents under a JSON Schema contract, for structured, reliable, and type-safe agent responses.",
   "keywords": [
     "pi",
@@ -36,9 +36,6 @@
     "image": "https://raw.githubusercontent.com/adamjakab/pi-jack/main/docs/logo.png",
     "extensions": [
       "./src/index.ts"
-    ],
-    "prompts": [
-      "./prompts/*.md"
     ]
   },
   "scripts": {
