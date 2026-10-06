@@ -36,6 +36,9 @@
     "image": "https://raw.githubusercontent.com/adamjakab/pi-jack/main/docs/logo.png",
     "extensions": [
       "./src/index.ts"
+    ],
+    "prompts": [
+      "./prompts"
     ]
   },
   "scripts": {
