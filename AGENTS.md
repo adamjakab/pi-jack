@@ -13,7 +13,7 @@ describes what it does for users.
 | `src/contract.ts`    | Shared between both sides: tool and flag names, the default schema, schema loading and checking, validation, thinking levels. |
 | `src/agents.ts`      | Agent discovery: built-in `agents/` plus the user's `~/.pi/agent/agents/`.                                                    |
 | `agents/`            | Built-in agents. `worker` is the default.                                                                                     |
-| `prompts/`           | Prompt templates, found by Pi through its conventional `prompts/` directory.                                                  |
+| `prompts/`           | Prompt templates, declared in the `pi.prompts` manifest entry of `package.json`.                                              |
 | `scripts/`           | `pi-modules.mjs` resolves the installed Pi release and links it as `.pi-modules`, which `tsconfig.json` resolves against.     |
 | `tests/unit/`        | Vitest unit tests: `<name>.test.ts` holds the tests for `src/<name>.ts`.                                                      |
 | `tests/e2e/`         | End-to-end tests: `run.ts` is the runner, `harness.ts` the shared pi-spawning helpers, `cases/` the tests.                    |
@@ -37,8 +37,8 @@ How a child is started: the parent runs
   edit here.
 - **Vitest:** finds the installed version by itself, or uses `$PI_MODULES` if set.
 - **Formatting:** Prettier with default settings. Format the files you touch.
-- **Prompts:** `prompts/*.md` is not declared in `package.json` or by a `resources_discover` handler; Pi finds the
-  `prompts/` directory by convention. Declaring it as well would load every template twice.
+- **Prompts:** `prompts/` is declared by the `pi.prompts` entry in `package.json`, not by a `resources_discover`
+  handler, so users can filter prompts off in settings. Declaring both would load every template twice.
 
 ## Tooling
 

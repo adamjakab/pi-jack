@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-06
+
+### Fixed
+
+- The package manifest declares the `prompts/` directory again through `pi.prompts`, so Pi registers the bundled prompt
+  templates and users can filter them off in settings.
+
 ## [1.0.5] - 2026-10-05
 
 ### Changed
