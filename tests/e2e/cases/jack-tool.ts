@@ -198,8 +198,8 @@ const cases: Record<string, Case> = {
     const failures: string[] = [];
     const run = await runParent(
       "In a SINGLE assistant turn, emit THREE separate jack tool calls at once (parallel tool calls, " +
-        "not one batch). Each call has agent='tester' and task = 'label: d1' / 'label: d2' / 'label: d3' " +
-        "respectively. Then stop.",
+        "not one batch). Each call has agent='tester' and task = 'Answer with the text dN. Use no other tools.', " +
+        "with N = 1, 2 and 3 respectively. Then stop.",
     );
     if (!usableParent(failures, run, 3)) return failures;
 

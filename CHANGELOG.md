@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-10-09
+
+### Fixed
+
+- A turn that ended in a provider error or an abort is no longer nudged to call `jack_subagent_result`. The model did
+  not forget to answer; the request failed, and each nudge sent the whole context again to a provider that had just
+  refused it, up to `MAX_FORMAT_RETRIES` more times.
+- When a `--tools` list leaves `jack_subagent_fail` out, the run is no longer told to call it: the result tool's
+  guidance and the nudge mention it only when the run can actually call it.
+
 ## [1.0.6] - 2026-10-06
 
 ### Fixed

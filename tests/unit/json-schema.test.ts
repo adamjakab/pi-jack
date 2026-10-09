@@ -81,7 +81,9 @@ function startChild(
     logged,
     notify,
     active: () => active,
-    settle: () => handlers.get("agent_before_settle")!({}, ctx),
+    /** Fires `agent_before_settle`; without an `outcome`, as from a pi whose event lacks the field. */
+    settle: (event: object = {}) =>
+      handlers.get("agent_before_settle")!(event, ctx),
     call: (name: string, params: unknown) =>
       tools.get(name).execute("id", params),
   };
@@ -103,7 +105,7 @@ describe("--json-schema", () => {
       strict: "prefer",
     });
     expect(child.tools.get(FAIL_TOOL)).toBeDefined();
-    expect(child.active()).toEqual(["read", RESULT_TOOL, FAIL_TOOL]);
+    expect(child.active()).toEqual(["read", FAIL_TOOL, RESULT_TOOL]);
   });
 
   it("accepts a valid answer and ends the run", async () => {
@@ -137,17 +139,59 @@ describe("--json-schema", () => {
     expect(child.settle()).toBeUndefined();
   });
 
-  it(`nudges an agent that stops without answering, at most ${MAX_FORMAT_RETRIES} times`, () => {
-    const child = startChild(schemaFile);
-    for (let i = 0; i < MAX_FORMAT_RETRIES; i++) {
-      const nudge = child.settle();
-      expect(nudge).toMatchObject({
+  it.each([
+    ["a completed turn", { outcome: "completed" }],
+    ["a pi whose event has no outcome", {}],
+  ])(
+    `nudges an agent that stops without answering, at most ${MAX_FORMAT_RETRIES} times, after %s`,
+    (_, event) => {
+      const child = startChild(schemaFile);
+      for (let i = 0; i < MAX_FORMAT_RETRIES; i++) {
+        const nudge = child.settle(event);
+        expect(nudge).toMatchObject({
+          continue: true,
+          entries: [{ type: "custom_message", display: false }],
+        });
+        expect(nudge.entries[0].content).toContain(RESULT_TOOL);
+      }
+      expect(child.settle(event)).toBeUndefined();
+    },
+  );
+
+  it.each(["error", "aborted"])(
+    "does not nudge a turn whose outcome is %s, nor count it against the nudges",
+    (outcome) => {
+      const child = startChild(schemaFile);
+      for (let i = 0; i < MAX_FORMAT_RETRIES + 1; i++) {
+        expect(child.settle({ outcome })).toBeUndefined();
+      }
+      // A later completed turn without an answer is still nudged.
+      expect(child.settle({ outcome: "completed" })).toMatchObject({
         continue: true,
-        entries: [{ type: "custom_message", display: false }],
       });
-      expect(nudge.entries[0].content).toContain(RESULT_TOOL);
-    }
-    expect(child.settle()).toBeUndefined();
+    },
+  );
+
+  it(`tells the agent about ${FAIL_TOOL} when it can call it`, () => {
+    const child = startChild(schemaFile);
+    expect(child.active()).toContain(FAIL_TOOL);
+    expect(child.tools.get(RESULT_TOOL).promptGuidelines.join("\n")).toContain(
+      FAIL_TOOL,
+    );
+    expect(child.settle().entries[0].content).toContain(FAIL_TOOL);
+  });
+
+  it(`never mentions ${FAIL_TOOL} when a --tools list leaves it out`, () => {
+    // Pi drops a tool missing from a `--tools` allowlist, and setActiveTools ignores its name.
+    const child = startChild(schemaFile, { excluded: [FAIL_TOOL] });
+    expect(child.active()).toEqual(["read", RESULT_TOOL]);
+    expect(child.logged).toEqual([]);
+    const guidelines = child.tools.get(RESULT_TOOL).promptGuidelines;
+    expect(guidelines.length).toBeGreaterThan(0);
+    expect(guidelines.join("\n")).not.toContain(FAIL_TOOL);
+    const nudge = child.settle({ outcome: "completed" });
+    expect(nudge.entries[0].content).toContain(RESULT_TOOL);
+    expect(nudge.entries[0].content).not.toContain(FAIL_TOOL);
   });
 
   it("registers nothing, and reports why, when the schema file is unusable", () => {
@@ -162,7 +206,7 @@ describe("--json-schema", () => {
 
   it("activates the result tools when registering them leaves them inactive", () => {
     const child = startChild(schemaFile, { activateOnRegister: false });
-    expect(child.active()).toEqual(["read", RESULT_TOOL, FAIL_TOOL]);
+    expect(child.active()).toEqual(["read", FAIL_TOOL, RESULT_TOOL]);
     expect(child.logged).toEqual([]);
   });
 
